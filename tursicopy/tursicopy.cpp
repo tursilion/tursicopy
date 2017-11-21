@@ -60,10 +60,12 @@ bool MoveToFolder(CString src, CString &dest) {
 // always called at exit in order to check error count
 void goodbye() {
     std::wcout << std::endl << "-- DONE -- " << errs << " errs." << std::endl;
+#ifdef _DEBUG
     if (errs) {
         std::wcout << "Press a key..." << std::endl;
         while (!_kbhit()) {}
     }
+#endif
     exit(-1);
 }
 
