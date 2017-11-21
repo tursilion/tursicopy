@@ -19,7 +19,7 @@ CString fmtStr = "%s~~[%d]";
 int errs = 0;
 
 /////////////////////////////////////////////////////////////////////////
-
+ 
 bool MoveToFolder(CString src, CString &dest) {
     // move a file to the target and ensure the path exists
     // used for the backup folder
