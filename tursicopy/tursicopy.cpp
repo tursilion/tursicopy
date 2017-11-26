@@ -10,6 +10,8 @@
 #include <iostream>
 #include <Shellapi.h>
 #include <conio.h>
+#include <io.h>
+#include <fcntl.h>
 #include <winerror.h>
 
 CString src, dest;
@@ -248,6 +250,8 @@ void RecursivePath(CString &path, CString subPath, HANDLE hFind, WIN32_FIND_DATA
             if ((findDat.cFileName[0] == '.')&&(findDat.cFileName[1]=='.')&&(findDat.cFileName[2]=='\0')) continue;
             // skip system volume information
             if (0 == wcscmp(findDat.cFileName, _T("System Volume Information"))) continue;
+            // skip recycle bins
+            if (0 == wcscmp(findDat.cFileName, _T("$RECYCLE.BIN"))) continue;
             // skip backup folders
             wchar_t* p=wcschr(findDat.cFileName, _T('~'));
             if (p != NULL) {
@@ -362,6 +366,11 @@ int main(int argc, char *argv[])
         printf("tursicopy <src> <dest>\nBacks up a folder with historical backups.\n");
         return -1;
 	}
+
+    // this is needed to make wcout accept unicode without dying, apparently.
+    // yes, it works to make the output 16-bit clean, but then I can't load it in notepad
+    // we just to just replace the stream output with printf
+//    _setmode(_fileno(stdout), _O_U16TEXT);
 
     src = argv[1];
     dest = argv[2];
