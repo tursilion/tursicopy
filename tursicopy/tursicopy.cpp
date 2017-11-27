@@ -59,6 +59,8 @@ void ConfirmOneFolder(CString& path, WIN32_FIND_DATA &findDat);
 void RecursivePath(CString &path, CString subPath, HANDLE hFind, WIN32_FIND_DATA& findDat, bool backingup);
 void DoNewBackup();
 void DeleteOrphans();
+// hardware.ccp
+bool EnableDisk(const CString& instanceId, bool enable);
 
 /////////////////////////////////////////////////////////////////////////
 
@@ -76,7 +78,7 @@ void myprintf(char *fmt, ...) {
     if (INVALID_HANDLE_VALUE != hLog) {
         // we need to find the \n and change them to \r\n
         // WriteFile doesn't do text translation
-        int sz=strlen(buf);
+        size_t sz=strlen(buf);
         // if there's no room left in the buffer, just give up
         char *s = buf;
         while (sz < sizeof(buf)-2) {
@@ -88,7 +90,7 @@ void myprintf(char *fmt, ...) {
             s=p+2;
         }
         strcat_s(buf, "\r");
-        WriteFile(hLog, buf, strlen(buf), NULL, NULL);
+        WriteFile(hLog, buf, (DWORD)strlen(buf), NULL, NULL);
     }
 }
 
@@ -196,7 +198,7 @@ bool ReadProfile(const CString &profile) {
         int p = 0;
         while ((string[p])&&(string[p] < ' ')) ++p;
         if (p > 0) memmove(string, &string[p], sizeof(string)-p);
-        p=strlen(string);
+        p=(int)strlen(string);
         while ((p>0)&&(string[p-1]<' ')) {
             --p;
             string[p]='\0';
@@ -845,6 +847,18 @@ void ConfirmOneFolder(CString &path, WIN32_FIND_DATA &findDat) {
 int main(int argc, char *argv[])
 {
     ULARGE_INTEGER totalBytes, freeBytes;
+
+#if 0
+    // this works! It REQUIRES admin priviledges - we should check how to verify we have them
+
+    // TODO: debug code testing... always step through SLOWLY or you'll have to reboot ;)
+    if (!EnableDisk("USBSTOR\\Disk&Ven_OPTI3&Prod_Flash_Disk&Rev_\\7&c67568f&0", false)) {
+        printf("Disable failed\n");
+    }
+    if (!EnableDisk("USBSTOR\\Disk&Ven_OPTI3&Prod_Flash_Disk&Rev_\\7&c67568f&0", true)) {
+        printf("Enable failed\n");
+    }
+#endif
 
 	if (!LoadConfig(argc, argv)) {
         print_usage();
