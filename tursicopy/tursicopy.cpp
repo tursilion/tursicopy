@@ -6,6 +6,8 @@
 // Oh, license. Right. "Mine. If you want to use it, have fun. If you want to
 // exploit it, contact me." Thanks. tursi - harmlesslion.com
 
+// almost big enough to start breaking up... ;)
+
 #include "stdafx.h"
 #include <iostream>
 #include <Shellapi.h>
@@ -13,14 +15,395 @@
 #include <io.h>
 #include <fcntl.h>
 #include <winerror.h>
+#include <vector>
 
-CString src, dest;
+CString src, dest, logfile;
+CString workingFolder;
+CString enableDevice, baseDest;
+bool unmountDevice, rotateOld, doBackup, deleteOld;
 ULARGE_INTEGER freeUser;
+ULARGE_INTEGER reserve;
+int saveFolders;
+int timeSlack;
 int lastBackup = -1;
 CString fmtStr = "%s~~[%d]";
 int errs = 0;
 
+struct _srcs {
+    CString srcPath;
+    CString destFolder;
+
+    _srcs(CString src, CString dest) {
+        srcPath = src;
+        destFolder = dest;
+    }
+};
+std::vector<_srcs> srcList;
+
+void setDefaults();
+void WatchAndWait();
+void SplitString(const char *inStr, CString &key, CString &val);
+bool ReadProfile(const CString&);
+void print_usage();
+bool LoadConfig(int argc, char *argv[]);
+CString formatPath(const CString& in);
+bool CheckExists(const CString &in);
+bool MoveToFolder(CString src, CString &dest);
+void goodbye();
+void RotateOldBackups();
+void MoveOneFile(CString &path, WIN32_FIND_DATA &findDat);
+void ConfirmOneFile(CString& path, WIN32_FIND_DATA &findDat);
+void ConfirmOneFolder(CString& path, WIN32_FIND_DATA &findDat);
+void RecursivePath(CString &path, CString subPath, HANDLE hFind, WIN32_FIND_DATA& findDat, bool backingup);
+void DoNewBackup();
+void DeleteOrphans();
+
 /////////////////////////////////////////////////////////////////////////
+
+void print_usage() {
+    printf_s("tursicopy - backs up a folder with historical backups.\n");
+    printf_s("  tursicopy <src_path> <dest_path>\n    - backs up from src_path to dest_path with default values\n");
+    printf_s("  tursicopy /now profile.txt\n    - backs up using a profile configuration\n");
+    printf_s("  tursicopy /watch\n    - wait for a removable drive with a 'tursicopy_profile.txt' to be attached\n");
+    printf_s("\nUsing a profile for timed backups is suggested to be a good idea - it MAY help\n");
+    printf_s("protect against ransomware? (If the tool can't read the profile, it won't overwrite the backup!\n");
+}
+
+// set default values
+void setDefaults() {
+    // set the default values for everything
+    dest = "";
+    baseDest = "";
+    logfile = "";
+    srcList.clear();
+    src = "";
+    enableDevice = "";
+    unmountDevice = false;
+    reserve.QuadPart = 10000000;
+    saveFolders = 5;
+    timeSlack = 5;
+    rotateOld = true;
+    doBackup = true;
+    deleteOld = true;
+    errs = 0;
+}
+
+// doubles as a reference for what goes in there.
+// Seems there is no way for a profile to backup TO the root folder...
+// I think I'm okay with that...
+void PrintProfile() {
+    printf_s("Profile settings:\n");
+
+    printf_s("\n[Setup]\n");
+    printf_s("DestPath=%S\n", baseDest.GetString());
+    printf_s("LogFile=%S\n", logfile.GetString());
+
+    printf_s("\n[Source]\n");
+    for (unsigned int idx = 0; idx < srcList.size(); ++idx) {
+        printf_s("%S=%S\n", srcList[idx].destFolder.GetString(), srcList[idx].srcPath.GetString());
+    }
+
+    printf_s("\n[Paranoid]\n");
+    printf_s("EnableDevice=%S\n", enableDevice.GetString());
+    printf_s("UnmountDevice=%d\n", unmountDevice?1:0);
+
+    printf_s("\n[Tuning]\n");
+    printf_s("Reserve=%llu\n", reserve.QuadPart/1000000);
+    printf_s("SaveFolders=%d\n", saveFolders);
+    printf_s("TimeSlack=%d\n", timeSlack);
+    printf_s("RotateOld=%d\n", rotateOld?1:0);
+    printf_s("DoBackup=%d\n", doBackup?1:0);
+    printf_s("DeleteOld=%d\n", deleteOld?1:0);
+    
+    printf_s("\n");
+}
+
+void SplitString(const char *inStr, CString &key, CString &val) {
+    CString in = inStr;
+    int p = in.Find('=');
+    if (-1 == p) {
+        return;
+    }
+    key = in.Left(p);
+    val = in.Mid(p+1);
+    key.Trim();
+    val.Trim();
+}
+
+bool ReadProfile(const CString &profile) {
+    char string[1024];
+    char sectionstr[128]="NONE";
+    enum {
+        NONE, SETUP, SOURCE, PARANOID, TUNING
+    };  // sections for easy switching
+    int section = NONE;
+    bool gotSomething = false;
+
+    // go ahead and open the file - it's an INI style profile
+    if (!CheckExists(profile)) {
+        printf("Can't open profile '%S'\n", profile.GetString());
+        return false;
+    }
+
+    // originally I was using GetPrivateProfileString, but the open nature of the sources
+    // block means it's just easier to parse the darn thing myself...
+    // Kind of wishing I didn't do sections now. Oh well ;)
+    FILE *fp;
+    errno_t ferr;
+    ferr = _wfopen_s(&fp, profile, _T("r"));
+    if (ferr) {
+        printf("Failed to open profile '%S', code %d\n", profile.GetString(), ferr);
+        return false;
+    }
+    while (!feof(fp)) {
+        // get a line
+        if (NULL == fgets(string, sizeof(string), fp)) {
+            break;
+        }
+        // strip whitespace and skip empty
+        int p = 0;
+        while ((string[p])&&(string[p] < ' ')) ++p;
+        if (p > 0) memmove(string, &string[p], sizeof(string)-p);
+        p=strlen(string);
+        while ((p>0)&&(string[p-1]<' ')) {
+            --p;
+            string[p]='\0';
+        }
+        if (p <= 0) continue;
+    
+        // is it a section header?
+        if (string[0]=='[') {
+            // yes, it is
+            p=1;
+            while ((p)&&(string[p]<' ')) ++p;
+            if (0 == _strnicmp(&string[p], "setup", 5)) {
+                section = SETUP;
+            } else if (0 == _strnicmp(&string[p], "source", 6)) {
+                section = SOURCE;
+            } else if (0 == _strnicmp(&string[p], "paranoid", 8)) {
+                section = PARANOID;
+            } else if (0 == _strnicmp(&string[p], "tuning", 6)) {
+                section = TUNING;
+            } else {
+                section = NONE;
+                printf("Ignoring unknown section '%s'\n", string);
+            }
+            strcpy_s(sectionstr, string);
+        } else if (section != NONE) {
+            // no it's not, and we care, so assume key/value pair
+            if (NULL == strchr(string, '=')) {
+                printf("Non-key/value pair in section %s: %s\n", sectionstr, string);
+                fclose(fp);
+                return false;
+            }
+            CString key, val;
+            SplitString(string, key, val);
+            if (key.GetLength() < 1) {
+                printf("Failed to parse key/value pair in section %s: %s\n", sectionstr, string);
+                fclose(fp);
+                return false;
+            }
+
+            switch (section) {
+                case SETUP:
+                    if (key.CompareNoCase(_T("DestPath")) == 0) {
+                        if ((val.GetLength() < 2) || (val[1] != ':')) {
+                            printf("DestPath must be a DOS-style absolute path [SETUP]: %s\n", string);
+                            return false;
+                        }
+                        baseDest = val;
+                        gotSomething = true;
+                    } else if (key.CompareNoCase(_T("LogFile")) == 0) {
+                        // this one is allowed to be empty
+                        if ((val.GetLength() > 1) && (val[1] != ':')) {
+                            printf("LogFile must be a DOS-style absolute path [SETUP]: %s\n", string);
+                            return false;
+                        }
+                        logfile = val;
+                        gotSomething = true;
+                    } else {
+                        printf("Unknown key in [SETUP]: %s\n", string);
+                    }
+                    break;
+
+                case SOURCE:
+                    // everything in this section is a path
+                    srcList.emplace_back(val, key);
+                    gotSomething = true;
+                    break;
+
+                case PARANOID:
+                    if (key.CompareNoCase(_T("EnableDevice")) == 0) {
+                        enableDevice = val;
+                        gotSomething = true;
+                    } else if (key.CompareNoCase(_T("UnmountDevice")) == 0) {
+                        if (val.Compare(_T("0")) == 0) {
+                            unmountDevice = false;
+                            gotSomething = true;
+                        } else if (val.Compare(_T("1")) == 0) {
+                            unmountDevice = true;
+                            gotSomething = true;
+                        } else {
+                            printf("Couldn't parse value for unmount (0/1) [PARANOID]: %s\n", string);
+                            fclose(fp);
+                            return false;
+                        }
+                    } else {
+                        printf("Unknown key in [PARANOID]: %s\n", string);
+                    }
+                    break;
+
+                case TUNING:
+                    if (key.CompareNoCase(_T("Reserve")) == 0) {
+                        reserve.QuadPart = _wtoi(val)*1000000ULL;
+                        if (reserve.QuadPart == 0) {
+                            printf("Invalid value for reserve [TUNING]: %s\n", string);
+                            fclose(fp);
+                            return false;
+                        }
+                        gotSomething = true;
+                    } else if (key.CompareNoCase(_T("SaveFolders")) == 0) {
+                        saveFolders = _wtoi(val);
+                        if (saveFolders == 0) {
+                            printf("Invalid value for saveFolders [TUNING]: %s\n", string);
+                            fclose(fp);
+                            return false;
+                        }
+                        gotSomething = true;
+                    } else if (key.CompareNoCase(_T("TimeSlack")) == 0) {
+                        timeSlack = _wtoi(val);
+                        if (timeSlack == 0) {
+                            printf("Invalid value for timeSlack [TUNING]: %s\n", string);
+                            fclose(fp);
+                            return false;
+                        }
+                        gotSomething = true;
+                    } else if (key.CompareNoCase(_T("RotateOld")) == 0) {
+                        if (val.Compare(_T("0")) == 0) {
+                            rotateOld = false;
+                            gotSomething = true;
+                        } else if (val.Compare(_T("1")) == 0) {
+                            rotateOld = true;
+                            gotSomething = true;
+                        } else {
+                            printf("Couldn't parse value for rotateOld [TUNING]: %s\n", string);
+                            fclose(fp);
+                            return false;
+                        }
+                    } else if (key.CompareNoCase(_T("DoBackup")) == 0) {
+                        if (val.Compare(_T("0")) == 0) {
+                            doBackup = false;
+                            gotSomething = true;
+                        } else if (val.Compare(_T("1")) == 0) {
+                            doBackup = true;
+                            gotSomething = true;
+                        } else {
+                            printf("Couldn't parse value for doBackup [TUNING]: %s\n", string);
+                            fclose(fp);
+                            return false;
+                        }
+                    } else if (key.CompareNoCase(_T("DeleteOld")) == 0) {
+                        if (val.Compare(_T("0")) == 0) {
+                            deleteOld = false;
+                            gotSomething = true;
+                        } else if (val.Compare(_T("1")) == 0) {
+                            deleteOld = true;
+                            gotSomething = true;
+                        } else {
+                            printf("Couldn't parse value for deleteOld [TUNING]: %s\n", string);
+                            fclose(fp);
+                            return false;
+                        }
+                    } else {
+                        printf("Unknown key in [PARANOID]: %s\n", string);
+                    }
+                    break;
+            }
+        }
+    }
+    fclose(fp);
+
+    if (!gotSomething) {
+        printf("Didn't find any valid settings in profile file.\n");
+        return false;
+    }
+
+    return true;
+}
+
+// this function's got a little magic to it... it waits for removable media
+// then checks if it has a backup profile on it
+void WatchAndWait() {
+    // create a tray icon
+    // close our console
+    // wait for a removable media device
+    // see if it's for us...
+    // open console
+    // spawn the copy
+    // close the console again
+    // and go back to waiting...
+}
+
+// read the configuration file into the evil, nasty globals
+// return false if something went wrong enough that we could tell
+bool LoadConfig(int argc, char *argv[]) {
+    setDefaults();
+
+    // now based on how we were called, update those values
+    if ((argc < 2)||(argv[1][0]=='?')) {
+        ++errs;
+        return false;
+	}
+
+    // check for classic argument mode
+    if ((argc == 3) && (argv[1][0] != '/')) {
+        src = argv[1];
+        baseDest = argv[2];
+        if (src.Right(1) != "\\") src+='\\';
+        if (baseDest.Right(1) != "\\") baseDest+='\\';
+        if (src.GetLength() < 3) {
+            printf("Please specify a full path for source.\n");
+            ++errs;
+            return false;
+	    }
+        if (baseDest.GetLength() < 3) {
+            printf("Please specify a full path for dest.\n");
+            ++errs;
+            return false;
+	    }
+        srcList.emplace_back(src, "");  // one source, from src to root folder of dest
+        return true;
+    }
+
+    // no? then it must be a switch controlled mode
+    if (strcmp(argv[1], "/now") == 0) {
+        if (argc != 3) {
+            printf("/now requires just one parameter, the profile to load.\n");
+            ++errs;
+            return false;
+	    }
+        CString profile = argv[2];
+        if (!ReadProfile(profile)) {
+            ++errs;
+            return false;
+	    }
+        // we're happy then, go for it!
+        return true;
+    }
+
+    if (strcmp(argv[1], "/watch") == 0) {
+        // We go wait for removable devices. This never returns.
+        WatchAndWait();
+        printf("Tursicopy /watch unexpectedly exitted...\n");
+        ++errs;
+        return false;    // but just in case it does ;)
+    }
+
+    // At this point, we have no idea what the user wants
+    printf("Unknown command mode.\n");
+    ++errs;
+    return false;
+}
 
 // format a path for use
 CString formatPath(const CString& in) {
@@ -100,7 +483,7 @@ void goodbye() {
 /////////////////////////////////////////////////////////////////////////
 // startup rotation
 
-void RotateOldBackups() {
+void RotateOldBackups(CString dest) {
     printf_s("Scanning for old backup folders...\n");
 
     // we are just renaming things, so we know there's enough disk space here
@@ -152,7 +535,7 @@ void MoveOneFile(CString &path, WIN32_FIND_DATA &findDat) {
     CString fn = findDat.cFileName;
     CString srcFile = src + path + fn;
     CString destFile = dest + path + fn;
-    CString backupFile; backupFile.Format(fmtStr, dest, 0); backupFile+="\\"; backupFile += path; backupFile+=fn;
+    CString backupFile; backupFile.Format(fmtStr, baseDest, 0); backupFile+='\\'; backupFile+=workingFolder; backupFile += path; backupFile+=fn;
 
     if (PathFileExists(destFile)) {
         // get the file information and see if it's stale
@@ -175,8 +558,16 @@ void MoveOneFile(CString &path, WIN32_FIND_DATA &findDat) {
         LONGLONG diffInTicks =
             reinterpret_cast<LARGE_INTEGER*>(&info.ftLastWriteTime)->QuadPart -
             reinterpret_cast<LARGE_INTEGER*>(&findDat.ftLastWriteTime)->QuadPart;
-        if ((diffInTicks > -50000000) &&
-            (diffInTicks < 50000000) &&
+        bool timeOk;
+        if (timeSlack < 0) {
+            // ignore time difference
+            timeOk = true;
+        } else {
+            timeOk = (diffInTicks > -timeSlack*10000000) &&
+            (diffInTicks < timeSlack*10000000);
+        }
+
+        if ((timeOk) && 
             (info.nFileSizeHigh == findDat.nFileSizeHigh) && 
             (info.nFileSizeLow == findDat.nFileSizeLow)) {
 #ifdef _DEBUG
@@ -197,21 +588,21 @@ void MoveOneFile(CString &path, WIN32_FIND_DATA &findDat) {
     ULARGE_INTEGER filesize;
     filesize.HighPart = findDat.nFileSizeHigh;
     filesize.LowPart = findDat.nFileSizeLow;
-    // keep 10MB of slack
-    while (filesize.QuadPart+10000000 >= freeUser.QuadPart) {
+    // keep configurable slack
+    while (filesize.QuadPart+reserve.QuadPart >= freeUser.QuadPart) {
         ULARGE_INTEGER totalBytes, freeBytes;
 
-        // remove the oldest folder, but keep at least 5
-        // keeps 10MB free
-        if (lastBackup <= 5) {
-            printf_s("** Not enough backup folders left to free space - aborting.\n");
+        printf_s("* Freeing disk space, deleting backup folder %d... ", lastBackup);
+
+        // remove the oldest folder, but keep a minimum count
+        if (lastBackup <= saveFolders) {
+            printf_s("\n** Not enough backup folders left to free space - aborting.\n");
             ++errs;
             goodbye();
         }
-        printf_s("* Freeing disk space, deleting backup folder %d... ", lastBackup);
 
         CString oldFolder;
-        oldFolder.Format(fmtStr, dest, lastBackup);
+        oldFolder.Format(fmtStr, baseDest, lastBackup);
         oldFolder+='\0';
         SHFILEOPSTRUCT op;
         op.hwnd = NULL;
@@ -380,7 +771,7 @@ void ConfirmOneFile(CString &path, WIN32_FIND_DATA &findDat) {
     CString fn = findDat.cFileName;
     CString srcFile = src + path + fn;
     CString destFile = dest + path + fn;
-    CString backupFile; backupFile.Format(fmtStr, dest, 0); backupFile+="\\"; backupFile += path; backupFile+=fn;
+    CString backupFile; backupFile.Format(fmtStr, baseDest, 0); backupFile+='\\'; backupFile+=workingFolder; backupFile += path; backupFile+=fn;
 
     if (!CheckExists(srcFile)) {
         printf_s("NUKE: %S -> %S\n", destFile.GetString(), backupFile.GetString());
@@ -418,26 +809,23 @@ int main(int argc, char *argv[])
 {
     ULARGE_INTEGER totalBytes, freeBytes;
 
-	if (argc < 3) {
-        printf_s("tursicopy <src> <dest>\nBacks up a folder with historical backups.\n");
+	if (!LoadConfig(argc, argv)) {
+        print_usage();
         return -1;
 	}
+    if (baseDest.Right(1) != '\\') baseDest+='\\';
+    PrintProfile();
 
-    src = argv[1];
-    dest = argv[2];
-    if (src.Right(1) != "\\") src+='\\';
-    if (dest.Right(1) != "\\") dest+='\\';
-
-    printf_s("Going to copy from %S to %S\n", src.GetString(), dest.GetString());
+    printf_s("Preparing backup folder %S\n", baseDest.GetString());
     
     // make sure the destination folder exists - need this before we check disk space
-    if (!MoveToFolder(_T(""), dest)) {
+    if (!MoveToFolder(_T(""), baseDest)) {
         printf_s("Failed to create target folder. Can't continue.\n");
         return -1;
     }
 
     printf_s("Checking destination free disk space... ");
-    if (!GetDiskFreeSpaceEx(dest, &freeUser, &totalBytes, &freeBytes)) {
+    if (!GetDiskFreeSpaceEx(baseDest, &freeUser, &totalBytes, &freeBytes)) {
         printf_s("Failed. Error %d\n", GetLastError());
         return -1;
     }
@@ -452,9 +840,47 @@ int main(int argc, char *argv[])
         return -1;
     }
 
-    RotateOldBackups();
-    DoNewBackup();
-    DeleteOrphans();
+    // do each step as requested
+    if ((!rotateOld)&&(!doBackup)&&(!deleteOld)) {
+        printf("No actual actions were set to be done!\n");
+        ++errs;
+    }
+
+    if (rotateOld) {
+        // rotate old backup folders just once per run
+        RotateOldBackups(baseDest);
+    }
+
+    if ((!doBackup)&&(!deleteOld)) {
+        printf("No backup or orphan check requested, ignoring source list.\n");
+    } else {
+        // this section rolls through the list of source folders
+        for (unsigned int idx = 0; idx < srcList.size(); ++idx) {
+            // set up src and dest for this instance
+            src = srcList[idx].srcPath;
+            if (src.Right(1) != '\\') src+='\\';
+            dest = baseDest + srcList[idx].destFolder;
+            if (dest.Right(1) != '\\') dest+='\\';
+            workingFolder = srcList[idx].destFolder;
+            if (workingFolder.Right(1) != '\\') workingFolder+='\\';
+
+            printf_s("Going to work from %S to %S\n", src.GetString(), dest.GetString());
+
+            // make sure this destination folder exists
+            if (!MoveToFolder(_T(""), dest)) {
+                printf_s("Failed to create target folder. Can't continue.\n");
+                return -1;
+            }
+
+            if (doBackup) { 
+                DoNewBackup();
+            }
+            if (deleteOld) {
+                DeleteOrphans();
+            }
+        }
+    }
+
     goodbye();
 
     return 0;
