@@ -38,7 +38,7 @@ bool MoveToFolder(CString src, CString &dest) {
         if (false == CreateDirectory(tmp, NULL)) {
             DWORD err = GetLastError();
             if (err != ERROR_ALREADY_EXISTS) {
-                std::wcout << "Failed to create folder " << tmp.GetString() << ", code " << GetLastError() << std::endl;
+                printf_s("Failed to create folder %S, code %d\n", tmp.GetString(), GetLastError());
                 ++errs;
             }
         }
@@ -61,10 +61,10 @@ bool MoveToFolder(CString src, CString &dest) {
 
 // always called at exit in order to check error count
 void goodbye() {
-    std::wcout << std::endl << "-- DONE -- " << errs << " errs." << std::endl;
+    printf_s("\n-- DONE -- %d errs.\n", errs);
 #ifdef _DEBUG
     if (errs) {
-        std::wcout << "Press a key..." << std::endl;
+        printf_s("Press a key...\n");
         while (!_kbhit()) {}
     }
 #endif
@@ -75,7 +75,7 @@ void goodbye() {
 // startup rotation
 
 void RotateOldBackups() {
-    std::wcout << "Scanning for old backup folders... " << std::endl;
+    printf_s("Scanning for old backup folders...\n");
 
     // we are just renaming things, so we know there's enough disk space here
     // backup folder names are "dest~~[x]", where 'x' is a number. Higher numbers are older. 0 is today.
@@ -90,7 +90,7 @@ void RotateOldBackups() {
         ++cnt;
     }
 
-    std::wcout << lastBackup+1 << " folders found." << std::endl;
+    printf_s("%d folders found.\n", lastBackup+1);
 
     // rename them all
     for (int idx = lastBackup; idx>=0; --idx) {
@@ -98,10 +98,10 @@ void RotateOldBackups() {
         oldFolder.Format(fmtStr, dest, idx);
         newFolder.Format(fmtStr, dest, idx+1);
 #ifdef _DEBUG
-        std::wcout << oldFolder.GetString() << " -> " << newFolder.GetString() << std::endl;
+        printf_s("%S -> %S\n", oldFolder.GetString(), newFolder.GetString());
 #endif
         if (!MoveFileEx(oldFolder, newFolder, MOVEFILE_WRITE_THROUGH)) {
-            std::wcout << "- MoveFile failed, code " << GetLastError() << std::endl;
+            printf_s("- MoveFile failed, code %d\n", GetLastError());
         }
     }
     ++lastBackup;
@@ -110,7 +110,7 @@ void RotateOldBackups() {
     CString newFolder; 
     newFolder.Format(fmtStr, dest, 0);
     if (!CreateDirectory(newFolder, NULL)) {
-        std::wcout << "Failed to create folder 0, code " << GetLastError() << std::endl;
+        printf_s("Failed to create folder 0, code %d\n", GetLastError());
         ++errs;
         goodbye();
     }
@@ -132,13 +132,13 @@ void MoveOneFile(CString &path, WIN32_FIND_DATA &findDat) {
         // get the file information and see if it's stale
         HANDLE hFile = CreateFile(destFile, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, NULL);
         if (INVALID_HANDLE_VALUE == hFile) {
-            std::wcout << "Failed to open old dest file, though it exists. Code " << GetLastError() << std::endl;
+            printf_s("Failed to open old dest file, though it exists. Code %d\n", GetLastError());
             ++errs;
             return;
         }
         BY_HANDLE_FILE_INFORMATION info;
         if (!GetFileInformationByHandle(hFile, &info)) {
-            std::wcout << "Failed to get old dest file information, skipping. Code " << GetLastError() << std::endl;
+            printf_s("Failed to get old dest file information, skipping. Code %d\n", GetLastError());
             ++errs;
             return;
         }
@@ -154,14 +154,14 @@ void MoveOneFile(CString &path, WIN32_FIND_DATA &findDat) {
             (info.nFileSizeHigh == findDat.nFileSizeHigh) && 
             (info.nFileSizeLow == findDat.nFileSizeLow)) {
 #ifdef _DEBUG
-            std::wcout << "SAME: " << destFile.GetString() << std::endl;
+            printf_s("SAME: %S\n", destFile.GetString());
 #endif
             return;
         }
 
-        std::wcout << "BACK: " << destFile.GetString() << " -> " << backupFile.GetString() << std::endl;
+        printf_s("BACK: %S -> %S\n", destFile.GetString(), backupFile.GetString());
         if (!MoveToFolder(destFile, backupFile)) {
-            std::wcout << "** Failed to move file -- not copied! Code " << GetLastError() << std::endl;
+            printf_s("** Failed to move file -- not copied! Code %d\n", GetLastError());
             ++errs;
             return;
         }
@@ -178,11 +178,11 @@ void MoveOneFile(CString &path, WIN32_FIND_DATA &findDat) {
         // remove the oldest folder, but keep at least 5
         // keeps 10MB free
         if (lastBackup <= 5) {
-            std::wcout << "** Not enough backup folders left to free space - aborting." << std::endl;
+            printf_s("** Not enough backup folders left to free space - aborting.\n");
             ++errs;
             goodbye();
         }
-        std::wcout << "* Freeing disk space, deleting backup folder " << lastBackup << "... ";
+        printf_s("* Freeing disk space, deleting backup folder %d... ", lastBackup);
 
         CString oldFolder;
         oldFolder.Format(fmtStr, dest, lastBackup);
@@ -198,7 +198,7 @@ void MoveOneFile(CString &path, WIN32_FIND_DATA &findDat) {
         op.lpszProgressTitle = _T("");
         int ret = SHFileOperation(&op);
         if (ret) {
-            std::wcout << std::endl << "* Deletion error (special) code " << ret << std::endl;
+            printf_s("\n* Deletion error (special) code %d\n", ret);
             ++errs;
             goodbye();
         }
@@ -209,17 +209,17 @@ void MoveOneFile(CString &path, WIN32_FIND_DATA &findDat) {
             Sleep(100);
             // update the free disk space
             if (!GetDiskFreeSpaceEx(dest, &freeUser, &totalBytes, &freeBytes)) {
-                std::wcout << "Failed. Error " << GetLastError() << std::endl;
+                printf_s("\nFailed. Error %d\n", GetLastError());
                 ++errs;
                 goodbye();
             }
         } while (old.QuadPart != freeUser.QuadPart);
         --lastBackup;
-        std::wcout << "Free space now " << freeUser.QuadPart << std::endl;
+        printf_s("Free space now %llu\n", freeUser.QuadPart);
     }
 
     // finally do the copy
-    std::wcout << "COPY: " << srcFile.GetString() << " -> " << destFile.GetString() << std::endl;
+    printf_s("COPY: %S -> %S\n", srcFile.GetString(), destFile.GetString());
     BOOL cancel = FALSE;
     // CopyFile2 can preserve attributes!
     COPYFILE2_EXTENDED_PARAMETERS param;
@@ -229,7 +229,7 @@ void MoveOneFile(CString &path, WIN32_FIND_DATA &findDat) {
     param.pProgressRoutine = NULL;
     param.pvCallbackContext = NULL;
     if (!SUCCEEDED(CopyFile2(srcFile, destFile, &param))) {
-        std::wcout << "** Failed to copy file -- Code " << GetLastError() << std::endl;
+        printf_s("** Failed to copy file -- Code %d\n", GetLastError());
         ++errs;
         return;
     }
@@ -262,7 +262,7 @@ void RecursivePath(CString &path, CString subPath, HANDLE hFind, WIN32_FIND_DATA
             }
 
 #ifdef _DEBUG
-            std::wcout << path.GetString() << subPath.GetString() << findDat.cFileName << std::endl;
+            printf_s("%S%S%S\n", path.GetString(), subPath.GetString(), findDat.cFileName);
 #endif
 
             // make sure this folder exists on the target
@@ -271,7 +271,7 @@ void RecursivePath(CString &path, CString subPath, HANDLE hFind, WIN32_FIND_DATA
                 if (!CreateDirectory(newFolder, NULL)) {
                     DWORD err = GetLastError();
                     if (err != ERROR_ALREADY_EXISTS) {
-                        std::wcout << "Warning to create folder " << newFolder.GetString() << ", code " << GetLastError() << std::endl;
+                        printf_s("Failed trying to create folder %S, code %d\n", newFolder.GetString(), GetLastError());
                         ++errs;
                     }
                 }
@@ -283,7 +283,7 @@ void RecursivePath(CString &path, CString subPath, HANDLE hFind, WIN32_FIND_DATA
             WIN32_FIND_DATA newFind;
             HANDLE hFind2 = FindFirstFile(srchPath, &newFind);
             if (INVALID_HANDLE_VALUE == hFind2) {
-                std::wcout << "Failed to search subdir search. Code " << GetLastError() << std::endl;
+                printf_s("Failed to start subdir search. Code %d\n", GetLastError());
                 ++errs;
                 continue;
             }
@@ -305,11 +305,11 @@ void DoNewBackup() {
     CString search = src + "*";
     WIN32_FIND_DATA findDat;
 
-    std::wcout << "Searching for new or changed files..." << std::endl;
+    printf_s("Searching for new or changed files...\n");
 
     HANDLE hFind = FindFirstFile(search, &findDat);
     if (INVALID_HANDLE_VALUE == hFind) {
-        std::wcout << "Failed to open search: code " << GetLastError() << std::endl;
+        printf_s("Failed to open search: code %d\n", GetLastError());
         return;
     }
     RecursivePath(src, "", hFind, findDat, true);
@@ -322,13 +322,13 @@ void DoNewBackup() {
 void DeleteOrphans() {
     // similar to backup, but runs backwards and moves any files
     // that were no longer in the src folder
-    std::wcout << "Remove orphaned files..." << std::endl;
+    printf_s("Remove orphaned files...\n");
 
     CString search = dest + "*";
     WIN32_FIND_DATA findDat;
     HANDLE hFind = FindFirstFile(search, &findDat);
     if (INVALID_HANDLE_VALUE == hFind) {
-        std::wcout << "Failed to open dest search: code " << GetLastError() << std::endl;
+        printf_s("Failed to open dest search: code %d\n", GetLastError());
         return;
     }
     RecursivePath(dest, "", hFind, findDat, false);
@@ -346,9 +346,9 @@ void ConfirmOneFile(CString &path, WIN32_FIND_DATA &findDat) {
     CString backupFile; backupFile.Format(fmtStr, dest, 0); backupFile+="\\"; backupFile += path; backupFile+=fn;
 
     if (!PathFileExists(srcFile)) {
-        std::wcout << "NUKE: " << destFile.GetString() << " -> " << backupFile.GetString() << std::endl;
+        printf_s("NUKE: %S -> %S\n", destFile.GetString(), backupFile.GetString());
         if (!MoveToFolder(destFile, backupFile)) {
-            std::wcout << "** Failed to move file -- not copied! Code " << GetLastError() << std::endl;
+            printf_s("** Failed to move file -- not copied! Code %d\n", GetLastError());
             ++errs;
             return;
         }
@@ -363,41 +363,36 @@ int main(int argc, char *argv[])
     ULARGE_INTEGER totalBytes, freeBytes;
 
 	if (argc < 3) {
-        printf("tursicopy <src> <dest>\nBacks up a folder with historical backups.\n");
+        printf_s("tursicopy <src> <dest>\nBacks up a folder with historical backups.\n");
         return -1;
 	}
-
-    // this is needed to make wcout accept unicode without dying, apparently.
-    // yes, it works to make the output 16-bit clean, but then I can't load it in notepad
-    // we just to just replace the stream output with printf
-//    _setmode(_fileno(stdout), _O_U16TEXT);
 
     src = argv[1];
     dest = argv[2];
     if (src.Right(1) != "\\") src+='\\';
     if (dest.Right(1) != "\\") dest+='\\';
 
-    std::wcout << "Going to copy from " << src.GetString() << " to " << dest.GetString() << std::endl;
+    printf_s("Going to copy from %S to %S\n", src.GetString(), dest.GetString());
     
     // make sure the destination folder exists - need this before we check disk space
     if (!MoveToFolder(_T(""), dest)) {
-        std::wcout << "Failed to create target folder." << std::endl;
+        printf_s("Failed to create target folder. Can't continue.\n");
         return -1;
     }
 
-    std::wcout << "Checking destination free disk space...";
+    printf_s("Checking destination free disk space... ");
     if (!GetDiskFreeSpaceEx(dest, &freeUser, &totalBytes, &freeBytes)) {
-        std::wcout << "Failed. Error " << GetLastError() << std::endl;
+        printf_s("Failed. Error %d\n", GetLastError());
         return -1;
     }
 
-    std::wcout << "Got " << freeUser.QuadPart << " bytes." << std::endl;
+    printf_s("Got %llu bytes.\n", freeUser.QuadPart);
     if (freeUser.QuadPart != freeBytes.QuadPart) {
-        std::wcout << "* Warning: user may have quotas. Disk free is " << freeBytes.QuadPart << std::endl;
+        printf_s("* Warning: user may have quotas. Disk free is %llu\n", freeBytes.QuadPart);
     }
 
     if (totalBytes.QuadPart == 0) {
-        std::wcout << "* Something went wrong - total disk size is zero bytes. Aborting." << std::endl;
+        printf_s("* Something went wrong - total disk size is zero bytes. Aborting.\n");
         return -1;
     }
 
