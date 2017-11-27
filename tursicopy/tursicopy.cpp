@@ -28,6 +28,7 @@ int timeSlack;
 int lastBackup = -1;
 CString fmtStr = "%s~~[%d]";
 int errs = 0;
+HANDLE hLog = INVALID_HANDLE_VALUE;
 
 struct _srcs {
     CString srcPath;
@@ -40,6 +41,7 @@ struct _srcs {
 };
 std::vector<_srcs> srcList;
 
+void myprintf(char *fmt, ...);
 void setDefaults();
 void WatchAndWait();
 void SplitString(const char *inStr, CString &key, CString &val);
@@ -60,13 +62,43 @@ void DeleteOrphans();
 
 /////////////////////////////////////////////////////////////////////////
 
+// helper to copy output to the log file
+void myprintf(char *fmt, ...) {
+    char buf[2048];
+    va_list args;
+    
+    va_start(args, fmt);
+    _vsnprintf_s(buf, sizeof(buf), fmt, args);
+    
+    buf[sizeof(buf)-1]='\0';
+    printf_s("%s", buf);
+
+    if (INVALID_HANDLE_VALUE != hLog) {
+        // we need to find the \n and change them to \r\n
+        // WriteFile doesn't do text translation
+        int sz=strlen(buf);
+        // if there's no room left in the buffer, just give up
+        char *s = buf;
+        while (sz < sizeof(buf)-2) {
+            char *p = strchr(s, '\n');
+            if (NULL == p) break;
+            memmove(p+1, p, sz-(p-buf)+1);
+            *p='\r';
+            ++sz;
+            s=p+2;
+        }
+        strcat_s(buf, "\r");
+        WriteFile(hLog, buf, strlen(buf), NULL, NULL);
+    }
+}
+
 void print_usage() {
-    printf_s("tursicopy - backs up a folder with historical backups.\n");
-    printf_s("  tursicopy <src_path> <dest_path>\n    - backs up from src_path to dest_path with default values\n");
-    printf_s("  tursicopy /now profile.txt\n    - backs up using a profile configuration\n");
-    printf_s("  tursicopy /watch\n    - wait for a removable drive with a 'tursicopy_profile.txt' to be attached\n");
-    printf_s("\nUsing a profile for timed backups is suggested to be a good idea - it MAY help\n");
-    printf_s("protect against ransomware? (If the tool can't read the profile, it won't overwrite the backup!\n");
+    myprintf("\ntursicopy - backs up a folder with historical backups.\n");
+    myprintf("  tursicopy <src_path> <dest_path>\n    - backs up from src_path to dest_path with default values\n");
+    myprintf("  tursicopy /now profile.txt\n    - backs up using a profile configuration\n");
+    myprintf("  tursicopy /watch\n    - wait for a removable drive with a 'tursicopy_profile.txt' to be attached\n");
+    myprintf("\nUsing a profile for timed backups is suggested to be a good idea - it MAY help\n");
+    myprintf("protect against ransomware? (If the tool can't read the profile, it won't overwrite the backup!\n");
 }
 
 // set default values
@@ -92,30 +124,30 @@ void setDefaults() {
 // Seems there is no way for a profile to backup TO the root folder...
 // I think I'm okay with that...
 void PrintProfile() {
-    printf_s("Profile settings:\n");
+    myprintf("Profile settings:\n");
 
-    printf_s("\n[Setup]\n");
-    printf_s("DestPath=%S\n", baseDest.GetString());
-    printf_s("LogFile=%S\n", logfile.GetString());
+    myprintf("\n[Setup]\n");
+    myprintf("DestPath=%S\n", baseDest.GetString());
+    myprintf("LogFile=%S\n", logfile.GetString());
 
-    printf_s("\n[Source]\n");
+    myprintf("\n[Source]\n");
     for (unsigned int idx = 0; idx < srcList.size(); ++idx) {
-        printf_s("%S=%S\n", srcList[idx].destFolder.GetString(), srcList[idx].srcPath.GetString());
+        myprintf("%S=%S\n", srcList[idx].destFolder.GetString(), srcList[idx].srcPath.GetString());
     }
 
-    printf_s("\n[Paranoid]\n");
-    printf_s("EnableDevice=%S\n", enableDevice.GetString());
-    printf_s("UnmountDevice=%d\n", unmountDevice?1:0);
+    myprintf("\n[Paranoid]\n");
+    myprintf("EnableDevice=%S\n", enableDevice.GetString());
+    myprintf("UnmountDevice=%d\n", unmountDevice?1:0);
 
-    printf_s("\n[Tuning]\n");
-    printf_s("Reserve=%llu\n", reserve.QuadPart/1000000);
-    printf_s("SaveFolders=%d\n", saveFolders);
-    printf_s("TimeSlack=%d\n", timeSlack);
-    printf_s("RotateOld=%d\n", rotateOld?1:0);
-    printf_s("DoBackup=%d\n", doBackup?1:0);
-    printf_s("DeleteOld=%d\n", deleteOld?1:0);
+    myprintf("\n[Tuning]\n");
+    myprintf("Reserve=%llu\n", reserve.QuadPart/1000000);
+    myprintf("SaveFolders=%d\n", saveFolders);
+    myprintf("TimeSlack=%d\n", timeSlack);
+    myprintf("RotateOld=%d\n", rotateOld?1:0);
+    myprintf("DoBackup=%d\n", doBackup?1:0);
+    myprintf("DeleteOld=%d\n", deleteOld?1:0);
     
-    printf_s("\n");
+    myprintf("\n");
 }
 
 void SplitString(const char *inStr, CString &key, CString &val) {
@@ -447,7 +479,7 @@ bool MoveToFolder(CString src, CString &dest) {
         if (false == CreateDirectory(formatPath(tmp), NULL)) {
             DWORD err = GetLastError();
             if (err != ERROR_ALREADY_EXISTS) {
-                printf_s("Failed to create folder %S, code %d\n", tmp.GetString(), GetLastError());
+                myprintf("Failed to create folder %S, code %d\n", tmp.GetString(), GetLastError());
                 ++errs;
             }
         }
@@ -470,10 +502,15 @@ bool MoveToFolder(CString src, CString &dest) {
 
 // always called at exit in order to check error count
 void goodbye() {
-    printf_s("\n-- DONE -- %d errs.\n", errs);
+    myprintf("\n-- DONE -- %d errs.\n", errs);
+    if (INVALID_HANDLE_VALUE != hLog) {
+        CloseHandle(hLog);
+    }
+
 #ifdef _DEBUG
     if (errs) {
-        printf_s("Press a key...\n");
+        myprintf("\n-- DONE -- %d errs.\n", errs);
+        myprintf("Press a key...\n");
         while (!_kbhit()) {}
     }
 #endif
@@ -484,7 +521,7 @@ void goodbye() {
 // startup rotation
 
 void RotateOldBackups(CString dest) {
-    printf_s("Scanning for old backup folders...\n");
+    myprintf("Scanning for old backup folders...\n");
 
     // we are just renaming things, so we know there's enough disk space here
     // backup folder names are "dest~~[x]", where 'x' is a number. Higher numbers are older. 0 is today.
@@ -499,7 +536,7 @@ void RotateOldBackups(CString dest) {
         ++cnt;
     }
 
-    printf_s("%d folders found.\n", lastBackup+1);
+    myprintf("%d folders found.\n", lastBackup+1);
 
     // rename them all
     for (int idx = lastBackup; idx>=0; --idx) {
@@ -507,10 +544,10 @@ void RotateOldBackups(CString dest) {
         oldFolder.Format(fmtStr, dest, idx);
         newFolder.Format(fmtStr, dest, idx+1);
 #ifdef _DEBUG
-        printf_s("%S -> %S\n", oldFolder.GetString(), newFolder.GetString());
+        myprintf("%S -> %S\n", oldFolder.GetString(), newFolder.GetString());
 #endif
         if (!MoveFileEx(formatPath(oldFolder), formatPath(newFolder), MOVEFILE_WRITE_THROUGH)) {
-            printf_s("- MoveFile failed, code %d\n", GetLastError());
+            myprintf("- MoveFile failed, code %d\n", GetLastError());
         }
     }
     ++lastBackup;
@@ -519,7 +556,7 @@ void RotateOldBackups(CString dest) {
     CString newFolder; 
     newFolder.Format(fmtStr, dest, 0);
     if (!CreateDirectory(formatPath(newFolder), NULL)) {
-        printf_s("Failed to create folder 0, code %d\n", GetLastError());
+        myprintf("Failed to create folder 0, code %d\n", GetLastError());
         ++errs;
         goodbye();
     }
@@ -541,13 +578,13 @@ void MoveOneFile(CString &path, WIN32_FIND_DATA &findDat) {
         // get the file information and see if it's stale
         HANDLE hFile = CreateFile(formatPath(destFile), GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, NULL);
         if (INVALID_HANDLE_VALUE == hFile) {
-            printf_s("Failed to open old dest file, though it exists. Code %d\n", GetLastError());
+            myprintf("Failed to open old dest file, though it exists. Code %d\n", GetLastError());
             ++errs;
             return;
         }
         BY_HANDLE_FILE_INFORMATION info;
         if (!GetFileInformationByHandle(hFile, &info)) {
-            printf_s("Failed to get old dest file information, skipping. Code %d\n", GetLastError());
+            myprintf("Failed to get old dest file information, skipping. Code %d\n", GetLastError());
             ++errs;
             return;
         }
@@ -571,14 +608,14 @@ void MoveOneFile(CString &path, WIN32_FIND_DATA &findDat) {
             (info.nFileSizeHigh == findDat.nFileSizeHigh) && 
             (info.nFileSizeLow == findDat.nFileSizeLow)) {
 #ifdef _DEBUG
-            printf_s("SAME: %S\n", destFile.GetString());
+            myprintf("SAME: %S\n", destFile.GetString());
 #endif
             return;
         }
 
-        printf_s("BACK: %S -> %S\n", destFile.GetString(), backupFile.GetString());
+        myprintf("BACK: %S -> %S\n", destFile.GetString(), backupFile.GetString());
         if (!MoveToFolder(destFile, backupFile)) {
-            printf_s("** Failed to move file -- not copied! Code %d\n", GetLastError());
+            myprintf("** Failed to move file -- not copied! Code %d\n", GetLastError());
             ++errs;
             return;
         }
@@ -592,11 +629,11 @@ void MoveOneFile(CString &path, WIN32_FIND_DATA &findDat) {
     while (filesize.QuadPart+reserve.QuadPart >= freeUser.QuadPart) {
         ULARGE_INTEGER totalBytes, freeBytes;
 
-        printf_s("* Freeing disk space, deleting backup folder %d... ", lastBackup);
+        myprintf("* Freeing disk space, deleting backup folder %d... ", lastBackup);
 
         // remove the oldest folder, but keep a minimum count
         if (lastBackup <= saveFolders) {
-            printf_s("\n** Not enough backup folders left to free space - aborting.\n");
+            myprintf("\n** Not enough backup folders left to free space - aborting.\n");
             ++errs;
             goodbye();
         }
@@ -615,9 +652,9 @@ void MoveOneFile(CString &path, WIN32_FIND_DATA &findDat) {
         op.lpszProgressTitle = _T("");
         int ret = SHFileOperation(&op);
         if (ret) {
-            printf_s("\n* Deletion error (special) code %d\n", ret);
+            myprintf("\n* Deletion error (special) code %d\n", ret);
             if (oldFolder.GetLength() >= MAX_PATH) {
-                printf_s("(The filepath may be too long - you can try deleting the folder by hand and then restarting.\n");
+                myprintf("(The filepath may be too long - you can try deleting the folder by hand and then restarting.\n");
             }
             ++errs;
             goodbye();
@@ -630,17 +667,17 @@ void MoveOneFile(CString &path, WIN32_FIND_DATA &findDat) {
             Sleep(100);
             // update the free disk space
             if (!GetDiskFreeSpaceEx(dest, &freeUser, &totalBytes, &freeBytes)) {
-                printf_s("\nFailed. Error %d\n", GetLastError());
+                myprintf("\nFailed. Error %d\n", GetLastError());
                 ++errs;
                 goodbye();
             }
         } while (old.QuadPart != freeUser.QuadPart);
         --lastBackup;
-        printf_s("Free space now %llu\n", freeUser.QuadPart);
+        myprintf("Free space now %llu\n", freeUser.QuadPart);
     }
 
     // finally do the copy
-    printf_s("COPY: %S -> %S\n", srcFile.GetString(), destFile.GetString());
+    myprintf("COPY: %S -> %S\n", srcFile.GetString(), destFile.GetString());
     BOOL cancel = FALSE;
     // CopyFile2 can preserve attributes!
     COPYFILE2_EXTENDED_PARAMETERS param;
@@ -650,7 +687,7 @@ void MoveOneFile(CString &path, WIN32_FIND_DATA &findDat) {
     param.pProgressRoutine = NULL;
     param.pvCallbackContext = NULL;
     if (!SUCCEEDED(CopyFile2(formatPath(srcFile), formatPath(destFile), &param))) {
-        printf_s("** Failed to copy file -- Code %d\n", GetLastError());
+        myprintf("** Failed to copy file -- Code %d\n", GetLastError());
         ++errs;
         return;
     }
@@ -684,7 +721,7 @@ void RecursivePath(CString &path, CString subPath, HANDLE hFind, WIN32_FIND_DATA
             }
 
 #ifdef _DEBUG
-            printf_s("%S%S%S\n", path.GetString(), subPath.GetString(), findDat.cFileName);
+            myprintf("%S%S%S\n", path.GetString(), subPath.GetString(), findDat.cFileName);
 #endif
 
             // make sure this folder exists on the target
@@ -693,7 +730,7 @@ void RecursivePath(CString &path, CString subPath, HANDLE hFind, WIN32_FIND_DATA
                 if (!CreateDirectory(formatPath(newFolder), NULL)) {
                     DWORD err = GetLastError();
                     if (err != ERROR_ALREADY_EXISTS) {
-                        printf_s("Failed trying to create folder %S, code %d\n", newFolder.GetString(), GetLastError());
+                        myprintf("Failed trying to create folder %S, code %d\n", newFolder.GetString(), GetLastError());
                         ++errs;
                     }
                 }
@@ -705,7 +742,7 @@ void RecursivePath(CString &path, CString subPath, HANDLE hFind, WIN32_FIND_DATA
             WIN32_FIND_DATA newFind;
             HANDLE hFind2 = FindFirstFile(formatPath(srchPath), &newFind);
             if (INVALID_HANDLE_VALUE == hFind2) {
-                printf_s("Failed to start subdir search. Code %d\n", GetLastError());
+                myprintf("Failed to start subdir search. Code %d\n", GetLastError());
                 ++errs;
                 continue;
             }
@@ -733,11 +770,11 @@ void DoNewBackup() {
     CString search = src + "*";
     WIN32_FIND_DATA findDat;
 
-    printf_s("Searching for new or changed files...\n");
+    myprintf("Searching for new or changed files...\n");
 
     HANDLE hFind = FindFirstFile(formatPath(search), &findDat);
     if (INVALID_HANDLE_VALUE == hFind) {
-        printf_s("Failed to open search: code %d\n", GetLastError());
+        myprintf("Failed to open search: code %d\n", GetLastError());
         return;
     }
     RecursivePath(src, "", hFind, findDat, true);
@@ -750,13 +787,13 @@ void DoNewBackup() {
 void DeleteOrphans() {
     // similar to backup, but runs backwards and moves any files
     // that were no longer in the src folder
-    printf_s("Remove orphaned files...\n");
+    myprintf("Remove orphaned files...\n");
 
     CString search = dest + "*";
     WIN32_FIND_DATA findDat;
     HANDLE hFind = FindFirstFile(formatPath(search), &findDat);
     if (INVALID_HANDLE_VALUE == hFind) {
-        printf_s("Failed to open dest search: code %d\n", GetLastError());
+        myprintf("Failed to open dest search: code %d\n", GetLastError());
         return;
     }
     RecursivePath(dest, "", hFind, findDat, false);
@@ -774,9 +811,9 @@ void ConfirmOneFile(CString &path, WIN32_FIND_DATA &findDat) {
     CString backupFile; backupFile.Format(fmtStr, baseDest, 0); backupFile+='\\'; backupFile+=workingFolder; backupFile += path; backupFile+=fn;
 
     if (!CheckExists(srcFile)) {
-        printf_s("NUKE: %S -> %S\n", destFile.GetString(), backupFile.GetString());
+        myprintf("NUKE: %S -> %S\n", destFile.GetString(), backupFile.GetString());
         if (!MoveToFolder(destFile, backupFile)) {
-            printf_s("** Failed to move file -- not copied! Code %d\n", GetLastError());
+            myprintf("** Failed to move file -- not copied! Code %d\n", GetLastError());
             ++errs;
             return;
         }
@@ -792,9 +829,9 @@ void ConfirmOneFolder(CString &path, WIN32_FIND_DATA &findDat) {
     CString destFile = dest + path + fn;
 
     if (!CheckExists(srcFile)) {
-        printf_s("NUKE: %S\n", destFile.GetString());
+        myprintf("NUKE: %S\n", destFile.GetString());
         if (!RemoveDirectory(formatPath(destFile))) {
-            printf_s("** Failed to remove orphan folder! Code %d\n", GetLastError());
+            myprintf("** Failed to remove orphan folder! Code %d\n", GetLastError());
             ++errs;
             return;
         }
@@ -811,32 +848,50 @@ int main(int argc, char *argv[])
 
 	if (!LoadConfig(argc, argv)) {
         print_usage();
+        goodbye();
         return -1;
 	}
     if (baseDest.Right(1) != '\\') baseDest+='\\';
+
+    // before we do anything else, redirect output (if there is a logFile)
+    if (logfile.GetLength() > 0) {
+        myprintf("Logging to: %S\n", logfile.GetString());
+        hLog = CreateFile(logfile, FILE_GENERIC_WRITE, FILE_SHARE_READ, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+        if (hLog == INVALID_HANDLE_VALUE) {
+            myprintf("Failed to open log, code %d\n", GetLastError);
+            ++errs;
+        }
+    }
+
     PrintProfile();
 
-    printf_s("Preparing backup folder %S\n", baseDest.GetString());
+    myprintf("Preparing backup folder %S\n", baseDest.GetString());
     
     // make sure the destination folder exists - need this before we check disk space
     if (!MoveToFolder(_T(""), baseDest)) {
-        printf_s("Failed to create target folder. Can't continue.\n");
+        myprintf("Failed to create target folder. Can't continue.\n");
+        ++errs;
+        goodbye();
         return -1;
     }
 
-    printf_s("Checking destination free disk space... ");
+    myprintf("Checking destination free disk space... ");
     if (!GetDiskFreeSpaceEx(baseDest, &freeUser, &totalBytes, &freeBytes)) {
-        printf_s("Failed. Error %d\n", GetLastError());
+        myprintf("Failed. Error %d\n", GetLastError());
+        ++errs;
+        goodbye();
         return -1;
     }
 
-    printf_s("Got %llu bytes.\n", freeUser.QuadPart);
+    myprintf("Got %llu bytes.\n", freeUser.QuadPart);
     if (freeUser.QuadPart != freeBytes.QuadPart) {
-        printf_s("* Warning: user may have quotas. Disk free is %llu\n", freeBytes.QuadPart);
+        myprintf("* Warning: user may have quotas. Disk free is %llu\n", freeBytes.QuadPart);
     }
 
     if (totalBytes.QuadPart == 0) {
-        printf_s("* Something went wrong - total disk size is zero bytes. Aborting.\n");
+        myprintf("* Something went wrong - total disk size is zero bytes. Aborting.\n");
+        ++errs;
+        goodbye();
         return -1;
     }
 
@@ -864,11 +919,13 @@ int main(int argc, char *argv[])
             workingFolder = srcList[idx].destFolder;
             if (workingFolder.Right(1) != '\\') workingFolder+='\\';
 
-            printf_s("Going to work from %S to %S\n", src.GetString(), dest.GetString());
+            myprintf("Going to work from %S to %S\n", src.GetString(), dest.GetString());
 
             // make sure this destination folder exists
             if (!MoveToFolder(_T(""), dest)) {
-                printf_s("Failed to create target folder. Can't continue.\n");
+                myprintf("Failed to create target folder. Can't continue.\n");
+                ++errs;
+                goodbye();
                 return -1;
             }
 
