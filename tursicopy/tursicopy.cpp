@@ -21,10 +21,36 @@ CString fmtStr = "%s~~[%d]";
 int errs = 0;
 
 /////////////////////////////////////////////////////////////////////////
- 
+
+// format a path for use
+CString formatPath(const CString& in) {
+    // for now, this is just adding the long filename extension
+    // we check if it's already there since we pass these things around
+    if (in.Left(4)=="\\\\?\\") {
+        return in;
+    }
+    CString out = "\\\\?\\";
+    out += in;
+    return out;
+}
+
+// check if a file exists - PathFileExists is limited to 260 chars, this is not
+bool CheckExists(const CString &in) {
+    DWORD ret = GetFileAttributes(formatPath(in));
+    if (ret == INVALID_FILE_ATTRIBUTES) {
+        DWORD err = GetLastError();
+        if ((err == ERROR_FILE_NOT_FOUND)||(err == ERROR_PATH_NOT_FOUND)) {
+            return false;
+        }
+        printf("Error locating attributes on %S, file treated as not present. Code %d\n", in.GetString(), err);
+        return false;
+    }
+    return true;
+}
+
+// move a file to the target and ensure the path exists
+// used for the backup folder
 bool MoveToFolder(CString src, CString &dest) {
-    // move a file to the target and ensure the path exists
-    // used for the backup folder
     int pos = 0;
     
     for (;;) {
@@ -35,7 +61,7 @@ bool MoveToFolder(CString src, CString &dest) {
         pos = z+1;
         tmp = tmp.Left(pos);
         if (tmp.Right(2) == ":\\") continue;    // We aren't allowed to create the root folder ;)
-        if (false == CreateDirectory(tmp, NULL)) {
+        if (false == CreateDirectory(formatPath(tmp), NULL)) {
             DWORD err = GetLastError();
             if (err != ERROR_ALREADY_EXISTS) {
                 printf_s("Failed to create folder %S, code %d\n", tmp.GetString(), GetLastError());
@@ -49,7 +75,7 @@ bool MoveToFolder(CString src, CString &dest) {
         return true;
     }
 
-    if (!MoveFileEx(src, dest, MOVEFILE_WRITE_THROUGH)) {
+    if (!MoveFileEx(formatPath(src), formatPath(dest), MOVEFILE_WRITE_THROUGH)) {
         return false;
     }
 
@@ -100,7 +126,7 @@ void RotateOldBackups() {
 #ifdef _DEBUG
         printf_s("%S -> %S\n", oldFolder.GetString(), newFolder.GetString());
 #endif
-        if (!MoveFileEx(oldFolder, newFolder, MOVEFILE_WRITE_THROUGH)) {
+        if (!MoveFileEx(formatPath(oldFolder), formatPath(newFolder), MOVEFILE_WRITE_THROUGH)) {
             printf_s("- MoveFile failed, code %d\n", GetLastError());
         }
     }
@@ -109,7 +135,7 @@ void RotateOldBackups() {
     // create the new 0
     CString newFolder; 
     newFolder.Format(fmtStr, dest, 0);
-    if (!CreateDirectory(newFolder, NULL)) {
+    if (!CreateDirectory(formatPath(newFolder), NULL)) {
         printf_s("Failed to create folder 0, code %d\n", GetLastError());
         ++errs;
         goodbye();
@@ -130,7 +156,7 @@ void MoveOneFile(CString &path, WIN32_FIND_DATA &findDat) {
 
     if (PathFileExists(destFile)) {
         // get the file information and see if it's stale
-        HANDLE hFile = CreateFile(destFile, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, NULL);
+        HANDLE hFile = CreateFile(formatPath(destFile), GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, NULL);
         if (INVALID_HANDLE_VALUE == hFile) {
             printf_s("Failed to open old dest file, though it exists. Code %d\n", GetLastError());
             ++errs;
@@ -190,7 +216,7 @@ void MoveOneFile(CString &path, WIN32_FIND_DATA &findDat) {
         SHFILEOPSTRUCT op;
         op.hwnd = NULL;
         op.wFunc = FO_DELETE;
-        op.pFrom = oldFolder.GetString();
+        op.pFrom = oldFolder.GetString();   // does not support \\?\ for long filenames
         op.pTo = NULL;
         op.fFlags = FOF_NOCONFIRMATION|FOF_NOERRORUI|FOF_NO_UI|FOF_SILENT;
         op.fAnyOperationsAborted = FALSE;
@@ -199,10 +225,14 @@ void MoveOneFile(CString &path, WIN32_FIND_DATA &findDat) {
         int ret = SHFileOperation(&op);
         if (ret) {
             printf_s("\n* Deletion error (special) code %d\n", ret);
+            if (oldFolder.GetLength() >= MAX_PATH) {
+                printf_s("(The filepath may be too long - you can try deleting the folder by hand and then restarting.\n");
+            }
             ++errs;
             goodbye();
         }
-        // a little loop to watch for the free disk to stop changing
+
+        // a little loop to watch for the free disk to stop changing - can take a little time
         ULARGE_INTEGER old;
         do {
             old.QuadPart = freeUser.QuadPart;
@@ -228,7 +258,7 @@ void MoveOneFile(CString &path, WIN32_FIND_DATA &findDat) {
     param.pfCancel = FALSE;
     param.pProgressRoutine = NULL;
     param.pvCallbackContext = NULL;
-    if (!SUCCEEDED(CopyFile2(srcFile, destFile, &param))) {
+    if (!SUCCEEDED(CopyFile2(formatPath(srcFile), formatPath(destFile), &param))) {
         printf_s("** Failed to copy file -- Code %d\n", GetLastError());
         ++errs;
         return;
@@ -238,6 +268,7 @@ void MoveOneFile(CString &path, WIN32_FIND_DATA &findDat) {
 
 // if not backing up, then we're deleting orphans
 void ConfirmOneFile(CString& path, WIN32_FIND_DATA &findDat);
+void ConfirmOneFolder(CString& path, WIN32_FIND_DATA &findDat);
 void RecursivePath(CString &path, CString subPath, HANDLE hFind, WIN32_FIND_DATA& findDat, bool backingup) {
     // run the current path into the ground ;)
     if (path.Right(1) != "\\") path+='\\';
@@ -268,7 +299,7 @@ void RecursivePath(CString &path, CString subPath, HANDLE hFind, WIN32_FIND_DATA
             // make sure this folder exists on the target
             if (backingup) {
                 CString newFolder = dest + subPath + findDat.cFileName;
-                if (!CreateDirectory(newFolder, NULL)) {
+                if (!CreateDirectory(formatPath(newFolder), NULL)) {
                     DWORD err = GetLastError();
                     if (err != ERROR_ALREADY_EXISTS) {
                         printf_s("Failed trying to create folder %S, code %d\n", newFolder.GetString(), GetLastError());
@@ -281,7 +312,7 @@ void RecursivePath(CString &path, CString subPath, HANDLE hFind, WIN32_FIND_DATA
             CString newSubPath = subPath + findDat.cFileName;
             CString srchPath = path + newSubPath + "\\*";
             WIN32_FIND_DATA newFind;
-            HANDLE hFind2 = FindFirstFile(srchPath, &newFind);
+            HANDLE hFind2 = FindFirstFile(formatPath(srchPath), &newFind);
             if (INVALID_HANDLE_VALUE == hFind2) {
                 printf_s("Failed to start subdir search. Code %d\n", GetLastError());
                 ++errs;
@@ -289,6 +320,12 @@ void RecursivePath(CString &path, CString subPath, HANDLE hFind, WIN32_FIND_DATA
             }
             RecursivePath(path, newSubPath, hFind2, newFind, backingup);
             FindClose(hFind2);
+
+            // if not backing up, we might need to remove this folder
+            if (!backingup) {
+                ConfirmOneFolder(subPath, findDat);
+            }
+
             continue;
         }
 
@@ -307,7 +344,7 @@ void DoNewBackup() {
 
     printf_s("Searching for new or changed files...\n");
 
-    HANDLE hFind = FindFirstFile(search, &findDat);
+    HANDLE hFind = FindFirstFile(formatPath(search), &findDat);
     if (INVALID_HANDLE_VALUE == hFind) {
         printf_s("Failed to open search: code %d\n", GetLastError());
         return;
@@ -326,7 +363,7 @@ void DeleteOrphans() {
 
     CString search = dest + "*";
     WIN32_FIND_DATA findDat;
-    HANDLE hFind = FindFirstFile(search, &findDat);
+    HANDLE hFind = FindFirstFile(formatPath(search), &findDat);
     if (INVALID_HANDLE_VALUE == hFind) {
         printf_s("Failed to open dest search: code %d\n", GetLastError());
         return;
@@ -345,7 +382,7 @@ void ConfirmOneFile(CString &path, WIN32_FIND_DATA &findDat) {
     CString destFile = dest + path + fn;
     CString backupFile; backupFile.Format(fmtStr, dest, 0); backupFile+="\\"; backupFile += path; backupFile+=fn;
 
-    if (!PathFileExists(srcFile)) {
+    if (!CheckExists(srcFile)) {
         printf_s("NUKE: %S -> %S\n", destFile.GetString(), backupFile.GetString());
         if (!MoveToFolder(destFile, backupFile)) {
             printf_s("** Failed to move file -- not copied! Code %d\n", GetLastError());
@@ -354,6 +391,25 @@ void ConfirmOneFile(CString &path, WIN32_FIND_DATA &findDat) {
         }
     }
 }
+
+// check if the passed in folder exists in src. If it does not, delete it (if there were any files, they were moved)
+// note that this (among other things) means we do not preserve empty folders in the backup.
+void ConfirmOneFolder(CString &path, WIN32_FIND_DATA &findDat) {
+    // remove folder src - we can use the dat to check whether to do it
+    CString fn = findDat.cFileName;
+    CString srcFile = src + path + fn;
+    CString destFile = dest + path + fn;
+
+    if (!CheckExists(srcFile)) {
+        printf_s("NUKE: %S\n", destFile.GetString());
+        if (!RemoveDirectory(formatPath(destFile))) {
+            printf_s("** Failed to remove orphan folder! Code %d\n", GetLastError());
+            ++errs;
+            return;
+        }
+    }
+}
+
 
 /////////////////////////////////////////////////////////////////////////
 // startup
