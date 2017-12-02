@@ -74,7 +74,7 @@ std::vector<SP_DEVINFO_DATA> GetDeviceInfoData(HDEVINFO handle)
     std::vector<SP_DEVINFO_DATA> data;
     SP_DEVINFO_DATA did;
     did.cbSize = sizeof(did);
-    int index = 0;
+    DWORD index = 0;
     while (SetupDiEnumDeviceInfo(handle, index, &did))
     {
         data.push_back(did);
@@ -84,6 +84,7 @@ std::vector<SP_DEVINFO_DATA> GetDeviceInfoData(HDEVINFO handle)
     if (GetLastError() != ERROR_NO_MORE_ITEMS) {
         myprintf("Error getting device information list on element %d, code %d\n", index, GetLastError());
     }
+
     return data;
 }
 

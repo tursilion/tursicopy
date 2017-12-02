@@ -41,6 +41,9 @@ struct _srcs {
 };
 std::vector<_srcs> srcList;
 
+bool CreateMessageWindow();
+void WindowThread();
+
 void myprintf(char *fmt, ...);
 void setDefaults();
 void WatchAndWait();
@@ -361,6 +364,9 @@ bool ReadProfile(const CString &profile) {
         printf("Didn't find any valid settings in profile file.\n");
         return false;
     }
+
+    // TODO: one last check: if EnableDevice or UnmountDevice are set,
+    // we need to check for Administrative privledges, as those are required
 
     return true;
 }
@@ -721,6 +727,7 @@ void RecursivePath(CString &path, CString subPath, HANDLE hFind, WIN32_FIND_DATA
                     continue;
                 }
             }
+            // TODO: can we make sure these are not junctions and not reparse points??
 
 #ifdef _DEBUG
             myprintf("%S%S%S\n", path.GetString(), subPath.GetString(), findDat.cFileName);
@@ -858,6 +865,19 @@ int main(int argc, char *argv[])
     if (!EnableDisk("USBSTOR\\Disk&Ven_OPTI3&Prod_Flash_Disk&Rev_\\7&c67568f&0", true)) {
         printf("Enable failed\n");
     }
+#endif
+#if 1
+    // this is the USB testing for Marjan's feature
+
+    if (!CreateMessageWindow()) {
+        ++errs;
+        goodbye();
+    }
+    WindowThread();
+
+
+
+
 #endif
 
 	if (!LoadConfig(argc, argv)) {
