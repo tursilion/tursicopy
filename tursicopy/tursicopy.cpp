@@ -16,10 +16,13 @@
 #include <fcntl.h>
 #include <winerror.h>
 #include <vector>
+#include <atlbase.h>
+#include <atlconv.h>
 
 CString src, dest, logfile;
 CString workingFolder;
 CString enableDevice, baseDest;
+CString csApp;
 bool unmountDevice, rotateOld, doBackup, deleteOld;
 ULARGE_INTEGER freeUser;
 ULARGE_INTEGER reserve;
@@ -28,7 +31,14 @@ int timeSlack;
 int lastBackup = -1;
 CString fmtStr = "%s~~[%d]";
 int errs = 0;
+bool bAutoMode = false;
+bool pauseOnErrs = false;
+bool mountOk = false;
 HANDLE hLog = INVALID_HANDLE_VALUE;
+
+// window thread
+extern bool quitflag;
+extern NOTIFYICONDATA icon;
 
 struct _srcs {
     CString srcPath;
@@ -42,7 +52,9 @@ struct _srcs {
 std::vector<_srcs> srcList;
 
 bool CreateMessageWindow();
-void WindowThread();
+void WindowLoop();
+void CreateTrayIcon();
+void RemoveTrayIcon();
 
 void myprintf(char *fmt, ...);
 void setDefaults();
@@ -55,7 +67,7 @@ CString formatPath(const CString& in);
 bool CheckExists(const CString &in);
 bool MoveToFolder(CString src, CString &dest);
 void goodbye();
-void RotateOldBackups();
+void RotateOldBackups(CString dest);
 void MoveOneFile(CString &path, WIN32_FIND_DATA &findDat);
 void ConfirmOneFile(CString& path, WIN32_FIND_DATA &findDat);
 void ConfirmOneFolder(CString& path, WIN32_FIND_DATA &findDat);
@@ -64,6 +76,7 @@ void DoNewBackup();
 void DeleteOrphans();
 // hardware.ccp
 bool EnableDisk(const CString& instanceId, bool enable);
+bool EjectDrive(CString pStr);
 
 /////////////////////////////////////////////////////////////////////////
 
@@ -71,11 +84,11 @@ bool EnableDisk(const CString& instanceId, bool enable);
 void myprintf(char *fmt, ...) {
     char buf[2048];
     va_list args;
-    
+
     va_start(args, fmt);
     _vsnprintf_s(buf, sizeof(buf), fmt, args);
-    
     buf[sizeof(buf)-1]='\0';
+
     printf_s("%s", buf);
 
     if (INVALID_HANDLE_VALUE != hLog) {
@@ -97,13 +110,29 @@ void myprintf(char *fmt, ...) {
     }
 }
 
+// from https://stackoverflow.com/questions/8046097/how-to-check-if-a-process-has-the-administrative-rights
+// by Beached
+BOOL IsElevated( ) {
+    BOOL fRet = FALSE;
+    HANDLE hToken = NULL;
+    if( OpenProcessToken( GetCurrentProcess( ),TOKEN_QUERY,&hToken ) ) {
+        TOKEN_ELEVATION Elevation;
+        DWORD cbSize = sizeof( TOKEN_ELEVATION );
+        if( GetTokenInformation( hToken, TokenElevation, &Elevation, sizeof( Elevation ), &cbSize ) ) {
+            fRet = Elevation.TokenIsElevated;
+        }
+    }
+    if( hToken ) {
+        CloseHandle( hToken );
+    }
+    return fRet;
+}
+
 void print_usage() {
     myprintf("\ntursicopy - backs up a folder with historical backups.\n");
     myprintf("  tursicopy <src_path> <dest_path>\n    - backs up from src_path to dest_path with default values\n");
     myprintf("  tursicopy /now profile.txt\n    - backs up using a profile configuration\n");
     myprintf("  tursicopy /watch\n    - wait for a removable drive with a 'tursicopy_profile.txt' to be attached\n");
-    myprintf("\nUsing a profile for timed backups is suggested to be a good idea - it MAY help\n");
-    myprintf("protect against ransomware? (If the tool can't read the profile, it won't overwrite the backup!\n");
 }
 
 // set default values
@@ -123,6 +152,7 @@ void setDefaults() {
     doBackup = true;
     deleteOld = true;
     errs = 0;
+    icon.cbSize = 0;
 }
 
 // doubles as a reference for what goes in there.
@@ -143,6 +173,7 @@ void PrintProfile() {
     myprintf("\n[Paranoid]\n");
     myprintf("EnableDevice=%S\n", enableDevice.GetString());
     myprintf("UnmountDevice=%d\n", unmountDevice?1:0);
+    myprintf("PauseOnErrors=%d\n", pauseOnErrs?1:0);
 
     myprintf("\n[Tuning]\n");
     myprintf("Reserve=%llu\n", reserve.QuadPart/1000000);
@@ -178,7 +209,7 @@ bool ReadProfile(const CString &profile) {
 
     // go ahead and open the file - it's an INI style profile
     if (!CheckExists(profile)) {
-        printf("Can't open profile '%S'\n", profile.GetString());
+        myprintf("Can't open profile '%S'\n", profile.GetString());
         return false;
     }
 
@@ -189,7 +220,7 @@ bool ReadProfile(const CString &profile) {
     errno_t ferr;
     ferr = _wfopen_s(&fp, profile, _T("r"));
     if (ferr) {
-        printf("Failed to open profile '%S', code %d\n", profile.GetString(), ferr);
+        myprintf("Failed to open profile '%S', code %d\n", profile.GetString(), ferr);
         return false;
     }
     while (!feof(fp)) {
@@ -223,20 +254,20 @@ bool ReadProfile(const CString &profile) {
                 section = TUNING;
             } else {
                 section = NONE;
-                printf("Ignoring unknown section '%s'\n", string);
+                myprintf("Ignoring unknown section '%s'\n", string);
             }
             strcpy_s(sectionstr, string);
         } else if (section != NONE) {
             // no it's not, and we care, so assume key/value pair
             if (NULL == strchr(string, '=')) {
-                printf("Non-key/value pair in section %s: %s\n", sectionstr, string);
+                myprintf("Non-key/value pair in section %s: %s\n", sectionstr, string);
                 fclose(fp);
                 return false;
             }
             CString key, val;
             SplitString(string, key, val);
             if (key.GetLength() < 1) {
-                printf("Failed to parse key/value pair in section %s: %s\n", sectionstr, string);
+                myprintf("Failed to parse key/value pair in section %s: %s\n", sectionstr, string);
                 fclose(fp);
                 return false;
             }
@@ -245,7 +276,7 @@ bool ReadProfile(const CString &profile) {
                 case SETUP:
                     if (key.CompareNoCase(_T("DestPath")) == 0) {
                         if ((val.GetLength() < 2) || (val[1] != ':')) {
-                            printf("DestPath must be a DOS-style absolute path [SETUP]: %s\n", string);
+                            myprintf("DestPath must be a DOS-style absolute path [SETUP]: %s\n", string);
                             return false;
                         }
                         baseDest = val;
@@ -253,13 +284,13 @@ bool ReadProfile(const CString &profile) {
                     } else if (key.CompareNoCase(_T("LogFile")) == 0) {
                         // this one is allowed to be empty
                         if ((val.GetLength() > 1) && (val[1] != ':')) {
-                            printf("LogFile must be a DOS-style absolute path [SETUP]: %s\n", string);
+                            myprintf("LogFile must be a DOS-style absolute path [SETUP]: %s\n", string);
                             return false;
                         }
                         logfile = val;
                         gotSomething = true;
                     } else {
-                        printf("Unknown key in [SETUP]: %s\n", string);
+                        myprintf("Unknown key in [SETUP]: %s\n", string);
                     }
                     break;
 
@@ -281,12 +312,24 @@ bool ReadProfile(const CString &profile) {
                             unmountDevice = true;
                             gotSomething = true;
                         } else {
-                            printf("Couldn't parse value for unmount (0/1) [PARANOID]: %s\n", string);
+                            myprintf("Couldn't parse value for unmount (0/1) [PARANOID]: %s\n", string);
+                            fclose(fp);
+                            return false;
+                        }
+                    } else if (key.CompareNoCase(_T("PauseOnErrors")) == 0) {
+                        if (val.Compare(_T("0")) == 0) {
+                            pauseOnErrs = false;
+                            gotSomething = true;
+                        } else if (val.Compare(_T("1")) == 0) {
+                            pauseOnErrs = true;
+                            gotSomething = true;
+                        } else {
+                            myprintf("Couldn't parse value for PauseOnErrors (0/1) [PARANOID]: %s\n", string);
                             fclose(fp);
                             return false;
                         }
                     } else {
-                        printf("Unknown key in [PARANOID]: %s\n", string);
+                        myprintf("Unknown key in [PARANOID]: %s\n", string);
                     }
                     break;
 
@@ -294,7 +337,7 @@ bool ReadProfile(const CString &profile) {
                     if (key.CompareNoCase(_T("Reserve")) == 0) {
                         reserve.QuadPart = _wtoi(val)*1000000ULL;
                         if (reserve.QuadPart == 0) {
-                            printf("Invalid value for reserve [TUNING]: %s\n", string);
+                            myprintf("Invalid value for reserve [TUNING]: %s\n", string);
                             fclose(fp);
                             return false;
                         }
@@ -302,7 +345,7 @@ bool ReadProfile(const CString &profile) {
                     } else if (key.CompareNoCase(_T("SaveFolders")) == 0) {
                         saveFolders = _wtoi(val);
                         if (saveFolders == 0) {
-                            printf("Invalid value for saveFolders [TUNING]: %s\n", string);
+                            myprintf("Invalid value for saveFolders [TUNING]: %s\n", string);
                             fclose(fp);
                             return false;
                         }
@@ -310,7 +353,7 @@ bool ReadProfile(const CString &profile) {
                     } else if (key.CompareNoCase(_T("TimeSlack")) == 0) {
                         timeSlack = _wtoi(val);
                         if (timeSlack == 0) {
-                            printf("Invalid value for timeSlack [TUNING]: %s\n", string);
+                            myprintf("Invalid value for timeSlack [TUNING]: %s\n", string);
                             fclose(fp);
                             return false;
                         }
@@ -323,7 +366,7 @@ bool ReadProfile(const CString &profile) {
                             rotateOld = true;
                             gotSomething = true;
                         } else {
-                            printf("Couldn't parse value for rotateOld [TUNING]: %s\n", string);
+                            myprintf("Couldn't parse value for rotateOld [TUNING]: %s\n", string);
                             fclose(fp);
                             return false;
                         }
@@ -335,7 +378,7 @@ bool ReadProfile(const CString &profile) {
                             doBackup = true;
                             gotSomething = true;
                         } else {
-                            printf("Couldn't parse value for doBackup [TUNING]: %s\n", string);
+                            myprintf("Couldn't parse value for doBackup [TUNING]: %s\n", string);
                             fclose(fp);
                             return false;
                         }
@@ -347,12 +390,12 @@ bool ReadProfile(const CString &profile) {
                             deleteOld = true;
                             gotSomething = true;
                         } else {
-                            printf("Couldn't parse value for deleteOld [TUNING]: %s\n", string);
+                            myprintf("Couldn't parse value for deleteOld [TUNING]: %s\n", string);
                             fclose(fp);
                             return false;
                         }
                     } else {
-                        printf("Unknown key in [PARANOID]: %s\n", string);
+                        myprintf("Unknown key in [PARANOID]: %s\n", string);
                     }
                     break;
             }
@@ -361,54 +404,79 @@ bool ReadProfile(const CString &profile) {
     fclose(fp);
 
     if (!gotSomething) {
-        printf("Didn't find any valid settings in profile file.\n");
+        myprintf("Didn't find any valid settings in profile file.\n");
         return false;
     }
 
-    // TODO: one last check: if EnableDevice or UnmountDevice are set,
-    // we need to check for Administrative privledges, as those are required
-
+    if ((enableDevice.GetLength() > 0) || (unmountDevice)) {
+        // we need administrative powers for these options...
+        if (!IsElevated()) {
+            myprintf("Enabling and ejecting devices requires administrative permissions - update your startup shortcut.\n");
+            return false;
+        }
+    }
     return true;
 }
 
 // this function's got a little magic to it... it waits for removable media
 // then checks if it has a backup profile on it
 void WatchAndWait() {
+    // create our listen window
+    if (!CreateMessageWindow()) {
+        myprintf("Failed to create message window, code %d\n", GetLastError());
+        ++errs;
+        return;
+    }
+
     // create a tray icon
-    // close our console
-    // wait for a removable media device
-    // see if it's for us...
-    // open console
-    // spawn the copy
-    // close the console again
-    // and go back to waiting...
+    CreateTrayIcon();
+
+#ifndef _DEBUG
+    // close our console - we're ready to go
+    FreeConsole();
+#endif
+
+    // Now we'll just loop on the message loop until it's time to exit
+    while (!quitflag) {
+        WindowLoop();
+    }
 }
 
 // read the configuration file into the evil, nasty globals
 // return false if something went wrong enough that we could tell
 bool LoadConfig(int argc, char *argv[]) {
     setDefaults();
+    csApp = argv[0];
+
+    // report information
+    for (int idx=0; idx<argc; ++idx) {
+        myprintf("%s ", argv[idx]);
+    }
+    myprintf("\n");
 
     // now based on how we were called, update those values
     if ((argc < 2)||(argv[1][0]=='?')) {
         ++errs;
+        print_usage();
         return false;
 	}
 
-    // check for classic argument mode
+    // check for classic argument mode (ie: just src: dest:)
     if ((argc == 3) && (argv[1][0] != '/')) {
         src = argv[1];
         baseDest = argv[2];
         if (src.Right(1) != "\\") src+='\\';
         if (baseDest.Right(1) != "\\") baseDest+='\\';
         if (src.GetLength() < 3) {
-            printf("Please specify a full path for source.\n");
+            myprintf("Please specify a full path for source.\n");
             ++errs;
+            print_usage();
             return false;
 	    }
         if (baseDest.GetLength() < 3) {
-            printf("Please specify a full path for dest.\n");
+            myprintf("Please specify a full path for dest.\n");
             ++errs;
+            print_usage();
             return false;
 	    }
         srcList.emplace_back(src, "");  // one source, from src to root folder of dest
@@ -416,9 +484,20 @@ bool LoadConfig(int argc, char *argv[]) {
     }
 
     // no? then it must be a switch controlled mode
-    if (strcmp(argv[1], "/now") == 0) {
+    // this is an internal mode used by the USB detection - it works the
+    // same as 'now' but in this mode ONLY we will honor the UnmountDevice flag
+    bAutoMode = false;
+    if (strcmp(argv[1], "/auto") == 0) {
+        bAutoMode = true;
+        // overwrite the enableDevice with the detected drive
+        // the location is the drive containing the profile file
+        enableDevice = argv[2];
+    }
+
+    // immediately read the profile file and execute it
+    if ((strcmp(argv[1], "/now") == 0) || (strcmp(argv[1], "/auto") == 0)) {
         if (argc != 3) {
-            printf("/now requires just one parameter, the profile to load.\n");
+            myprintf("/now requires just one parameter, the profile to load.\n");
             ++errs;
             return false;
 	    }
@@ -427,21 +506,37 @@ bool LoadConfig(int argc, char *argv[]) {
             ++errs;
             return false;
 	    }
+
+        if (enableDevice.GetLength() == 0) {
+            // to avoid confusion later, don't unmount if we aren't mounting
+            unmountDevice = false;
+        }
+
+        if (bAutoMode) {
+            // update the dest path with the letter of the USB device
+            baseDest.SetAt(0, profile[0]);
+            // if there's a logfile, then update that too
+            if (logfile.GetLength() > 0) {
+                logfile.SetAt(0, profile[0]);
+            }
+        }
+
         // we're happy then, go for it!
         return true;
     }
 
+    // watch for a USB device to be inserted that contains a profile
     if (strcmp(argv[1], "/watch") == 0) {
         // We go wait for removable devices. This never returns.
         WatchAndWait();
-        printf("Tursicopy /watch unexpectedly exitted...\n");
-        ++errs;
+        myprintf("Tursicopy /watch exitted...\n");
         return false;    // but just in case it does ;)
     }
 
     // At this point, we have no idea what the user wants
-    printf("Unknown command mode.\n");
+    myprintf("Unknown command mode.\n");
     ++errs;
+    print_usage();
     return false;
 }
 
@@ -465,7 +560,7 @@ bool CheckExists(const CString &in) {
         if ((err == ERROR_FILE_NOT_FOUND)||(err == ERROR_PATH_NOT_FOUND)) {
             return false;
         }
-        printf("Error locating attributes on %S, file treated as not present. Code %d\n", in.GetString(), err);
+        myprintf("Error locating attributes on %S, file treated as not present. Code %d\n", in.GetString(), err);
         return false;
     }
     return true;
@@ -505,11 +600,27 @@ bool MoveToFolder(CString src, CString &dest) {
     return true;
 }
 
-
 /////////////////////////////////////////////////////////////////////////
 
 // always called at exit in order to check error count
 void goodbye() {
+    quitflag = true;
+    RemoveTrayIcon();
+    Sleep(100);
+
+    // do we need to unmount?
+    if ((mountOk) && (unmountDevice)) {
+        // now is it a USB unmount or a device disable?
+        if (bAutoMode) {
+            // USB unmount - this does not guarantee inaccessibility
+            EjectDrive(enableDevice);
+        } else {
+            // hardware disable
+            EnableDisk(enableDevice, false);
+        }
+    }
+
+    // report
     myprintf("\n-- DONE -- %d errs.\n", errs);
     if (INVALID_HANDLE_VALUE != hLog) {
         CloseHandle(hLog);
@@ -519,8 +630,12 @@ void goodbye() {
     if (errs) {
         myprintf("\n-- DONE -- %d errs.\n", errs);
         myprintf("Press a key...\n");
-        while (!_kbhit()) {}
     }
+    while (!_kbhit()) {}
+#else
+    if ((errs)&&(pauseOnErrs)) {
+    myprintf("Press a key...\n");
+    while (!_kbhit()) {}
 #endif
     exit(-1);
 }
@@ -581,6 +696,7 @@ void MoveOneFile(CString &path, WIN32_FIND_DATA &findDat) {
     CString srcFile = src + path + fn;
     CString destFile = dest + path + fn;
     CString backupFile; backupFile.Format(fmtStr, baseDest, 0); backupFile+='\\'; backupFile+=workingFolder; backupFile += path; backupFile+=fn;
+    USES_CONVERSION;
 
     if (PathFileExists(destFile)) {
         // get the file information and see if it's stale
@@ -616,12 +732,12 @@ void MoveOneFile(CString &path, WIN32_FIND_DATA &findDat) {
             (info.nFileSizeHigh == findDat.nFileSizeHigh) && 
             (info.nFileSizeLow == findDat.nFileSizeLow)) {
 #ifdef _DEBUG
-            myprintf("SAME: %S\n", destFile.GetString());
+            myprintf("SAME: %s\n", W2A(destFile.GetString()));
 #endif
             return;
         }
 
-        myprintf("BACK: %S -> %S\n", destFile.GetString(), backupFile.GetString());
+        myprintf("BACK: %s -> %s\n", W2A(destFile.GetString()), W2A(backupFile.GetString()));
         if (!MoveToFolder(destFile, backupFile)) {
             myprintf("** Failed to move file -- not copied! Code %d\n", GetLastError());
             ++errs;
@@ -685,7 +801,7 @@ void MoveOneFile(CString &path, WIN32_FIND_DATA &findDat) {
     }
 
     // finally do the copy
-    myprintf("COPY: %S -> %S\n", srcFile.GetString(), destFile.GetString());
+    myprintf("COPY: %s -> %s\n", W2A(srcFile.GetString()), W2A(destFile.GetString()));
     BOOL cancel = FALSE;
     // CopyFile2 can preserve attributes!
     COPYFILE2_EXTENDED_PARAMETERS param;
@@ -727,7 +843,9 @@ void RecursivePath(CString &path, CString subPath, HANDLE hFind, WIN32_FIND_DATA
                     continue;
                 }
             }
-            // TODO: can we make sure these are not junctions and not reparse points??
+            if (findDat.dwFileAttributes & FILE_ATTRIBUTE_OFFLINE) continue;
+            if (findDat.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) continue;
+            if (findDat.dwFileAttributes & FILE_ATTRIBUTE_TEMPORARY) continue;
 
 #ifdef _DEBUG
             myprintf("%S%S%S\n", path.GetString(), subPath.GetString(), findDat.cFileName);
@@ -814,13 +932,14 @@ void ConfirmOneFile(CString &path, WIN32_FIND_DATA &findDat) {
     // copy file from src to dest - we can use the dat to check whether to do it
     // any old file is moved to the backup folder~~[0] before being replaced
     // free space is expected to be present
+    USES_CONVERSION;
     CString fn = findDat.cFileName;
     CString srcFile = src + path + fn;
     CString destFile = dest + path + fn;
     CString backupFile; backupFile.Format(fmtStr, baseDest, 0); backupFile+='\\'; backupFile+=workingFolder; backupFile += path; backupFile+=fn;
 
     if (!CheckExists(srcFile)) {
-        myprintf("NUKE: %S -> %S\n", destFile.GetString(), backupFile.GetString());
+        myprintf("NUKE: %s -> %s\n", W2A(destFile.GetString()), W2A(backupFile.GetString()));
         if (!MoveToFolder(destFile, backupFile)) {
             myprintf("** Failed to move file -- not copied! Code %d\n", GetLastError());
             ++errs;
@@ -847,6 +966,44 @@ void ConfirmOneFolder(CString &path, WIN32_FIND_DATA &findDat) {
     }
 }
 
+void ProcessInsert(wchar_t letter) {
+    // check whether drive letter has a tursicopy.txt profile on it
+    CString csPath = letter;
+    csPath += ":\\tursicopy.txt";
+
+    if (!CheckExists(csPath)) {
+        // nope, just ignore it
+#ifdef _DEBUG
+        myprintf("%S is not present, skipping\n", csPath);
+#endif
+        return;
+    }
+    
+    // yes, it does exist! So we need to launch the tool.
+    CString csCmd = "\"";
+    csCmd += csApp;
+    csCmd += "\" /auto ";
+    csCmd += csPath;
+    STARTUPINFO si;
+    PROCESS_INFORMATION pi;
+    wchar_t runCmd[1024];
+
+    ZeroMemory( &si, sizeof(si) );
+    si.cb = sizeof(si);
+    ZeroMemory( &pi, sizeof(pi) );
+
+    wcscpy_s(runCmd, csCmd.GetString());
+    myprintf("Executing %S\n", runCmd);
+
+    if (!CreateProcess(NULL, runCmd, NULL, NULL, TRUE, CREATE_NEW_CONSOLE|CREATE_NO_WINDOW, NULL, NULL, &si, &pi)) {
+        CString msg;
+        msg.Format(_T("Failed to create process. Code %d"), GetLastError());
+        myprintf("%S\n", msg.GetString());
+        // we probably don't have a console to report to
+        MessageBox(NULL, msg, _T("Failed to launch Tursicopy"), MB_OK);
+        return;
+    }
+}
 
 /////////////////////////////////////////////////////////////////////////
 // startup
@@ -854,34 +1011,9 @@ void ConfirmOneFolder(CString &path, WIN32_FIND_DATA &findDat) {
 int main(int argc, char *argv[])
 {
     ULARGE_INTEGER totalBytes, freeBytes;
-
-#if 0
-    // this works! It REQUIRES admin priviledges - we should check how to verify we have them
-
-    // TODO: debug code testing... always step through SLOWLY or you'll have to reboot ;)
-    if (!EnableDisk("USBSTOR\\Disk&Ven_OPTI3&Prod_Flash_Disk&Rev_\\7&c67568f&0", false)) {
-        printf("Disable failed\n");
-    }
-    if (!EnableDisk("USBSTOR\\Disk&Ven_OPTI3&Prod_Flash_Disk&Rev_\\7&c67568f&0", true)) {
-        printf("Enable failed\n");
-    }
-#endif
-#if 1
-    // this is the USB testing for Marjan's feature
-
-    if (!CreateMessageWindow()) {
-        ++errs;
-        goodbye();
-    }
-    WindowThread();
-
-
-
-
-#endif
+    USES_CONVERSION;
 
 	if (!LoadConfig(argc, argv)) {
-        print_usage();
         goodbye();
         return -1;
 	}
@@ -896,10 +1028,20 @@ int main(int argc, char *argv[])
             ++errs;
         }
     }
-
     PrintProfile();
 
-    myprintf("Preparing backup folder %S\n", baseDest.GetString());
+    // check whether we need to mount the backup device
+    if (enableDevice.GetLength() > 0) {
+        if (!EnableDisk(enableDevice, true)) {
+            myprintf("Failed to enable device, can not proceed.\n");
+            ++errs;
+            goodbye();
+        }
+    }
+    mountOk = true;
+
+    // Get started
+    myprintf("Preparing backup folder %s\n", W2A(baseDest.GetString()));
     
     // make sure the destination folder exists - need this before we check disk space
     if (!MoveToFolder(_T(""), baseDest)) {
@@ -931,7 +1073,7 @@ int main(int argc, char *argv[])
 
     // do each step as requested
     if ((!rotateOld)&&(!doBackup)&&(!deleteOld)) {
-        printf("No actual actions were set to be done!\n");
+        myprintf("No actual actions were set to be done!\n");
         ++errs;
     }
 
@@ -941,7 +1083,7 @@ int main(int argc, char *argv[])
     }
 
     if ((!doBackup)&&(!deleteOld)) {
-        printf("No backup or orphan check requested, ignoring source list.\n");
+        myprintf("No backup or orphan check requested, ignoring source list.\n");
     } else {
         // this section rolls through the list of source folders
         for (unsigned int idx = 0; idx < srcList.size(); ++idx) {
@@ -953,7 +1095,7 @@ int main(int argc, char *argv[])
             workingFolder = srcList[idx].destFolder;
             if (workingFolder.Right(1) != '\\') workingFolder+='\\';
 
-            myprintf("Going to work from %S to %S\n", src.GetString(), dest.GetString());
+            myprintf("Going to work from %s to %s\n", W2A(src.GetString()), W2A(dest.GetString()));
 
             // make sure this destination folder exists
             if (!MoveToFolder(_T(""), dest)) {
@@ -976,4 +1118,3 @@ int main(int argc, char *argv[])
 
     return 0;
 }
-

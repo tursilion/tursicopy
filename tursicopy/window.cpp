@@ -10,15 +10,18 @@
 #include <cfgmgr32.h>
 #include <setupapi.h>
 #include <vector>
+#include <shellapi.h>
 
 HWND myWnd = NULL;
 bool quitflag = false;
+NOTIFYICONDATA icon;
 
 void myprintf(char *fmt, ...);
+void ProcessInsert(wchar_t letter);
 extern int errs;
 
 void HandleDeviceChange(WPARAM wParam, LPARAM lParam);
-bool EjectDrive(const char* pStr);
+bool EjectDrive(CString pStr);
 
 /////////////////////////////////////////////////////////////////////////
 // Window handler
@@ -27,9 +30,17 @@ LRESULT FAR PASCAL myproc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
 	if (myWnd == hwnd) {	// Main window
 		switch(msg) {
+        case WM_USER:
+            if (lParam == WM_LBUTTONDBLCLK) {
+                myprintf("Got double click - will exit.\n");
+                quitflag = true;
+            }
+            break;
+
     	case WM_DESTROY:
-			PostQuitMessage(0);
-			break;
+            myprintf("Got WM_DESTROY - will exit.\n");
+            quitflag = true;
+            break;
 
         case WM_DEVICECHANGE:
             // USB device change
@@ -37,7 +48,7 @@ LRESULT FAR PASCAL myproc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             // 3 times on removal. This may have to do with the number
             // of installed devices. Both EJECT and physical removal
             // actually trigger this, even if both are used!
-            printf("Handle device change...\n");
+            myprintf("Handle device change...\n");
             HandleDeviceChange(wParam, lParam);
             return TRUE;      // accept the new device
 
@@ -46,7 +57,7 @@ LRESULT FAR PASCAL myproc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             // but I see it right at the end. technically it's in the
             // WM_USER range (I guess), so maybe it's my AV?
 		default:
-            printf("got message 0x%08x\n", msg);
+            myprintf("got message 0x%08x\n", msg);
   			return(DefWindowProc(hwnd, msg, wParam, lParam));
 		}
 		return 0;
@@ -60,7 +71,7 @@ bool CreateMessageWindow() {
 	WNDCLASS aclass;
 
 	// create and register a class and open a window
-	aclass.style = 0;
+	aclass.style = CS_DBLCLKS;
 	aclass.lpfnWndProc = myproc;
 	aclass.cbClsExtra = 0;
 	aclass.cbWndExtra = 0;
@@ -72,12 +83,12 @@ bool CreateMessageWindow() {
 	aclass.lpszClassName = _T("tursicopy_class");
 	myClass = RegisterClass(&aclass);
 	if (0 == myClass) {	
-		printf("Can't create class: 0x%x", GetLastError());
+		myprintf("Can't create class: 0x%x", GetLastError());
         return false;
 	}
 	myWnd = CreateWindow(_T("tursicopy_class"), _T("TursiCopy"), 0, CW_USEDEFAULT, CW_USEDEFAULT, 32, 32, NULL, NULL, NULL, NULL);
 	if (NULL == myWnd) {	
-		printf("Can't open window: 0x%x", GetLastError());
+		myprintf("Can't open window: 0x%x", GetLastError());
         return false;
 	}
 
@@ -88,30 +99,35 @@ bool CreateMessageWindow() {
 /////////////////////////////////////////////////////////
 // Window message loop
 /////////////////////////////////////////////////////////
-void WindowThread() {
+void WindowLoop() {
 	MSG msg;
 
-	while (!quitflag) {
-		// check for messages
-		if (0 == GetMessage(&msg, NULL, 0, 0)) {
-			quitflag=1;
-			break;
-		} else {
-			if (msg.message == WM_QUIT) {
-				// shouldn't happen, since GetMessage should return 0
-				quitflag=1;
-			} 
-			
-			if (IsWindow(myWnd)) {
-				if (IsDialogMessage(myWnd, &msg)) {
-					// processed
-					continue;
-				}
-			}
+	// check for messages
+    if (0 == PeekMessage(&msg, NULL, 0, 0, PM_NOREMOVE)) {
+        Sleep(50);
+        return;
+    }
 
-			TranslateMessage(&msg);
-			DispatchMessage(&msg);		// this will push it to the Window procedure
+    // get the pending message
+	if (0 == GetMessage(&msg, NULL, 0, 0)) {
+        printf("GetMessage returned 0, exitting\n");
+		quitflag=true;
+	} else {
+		if (msg.message == WM_QUIT) {
+			// shouldn't happen, since GetMessage should return 0
+            printf("Received WM_QUIT, exitting.\n");
+			quitflag=true;
 		}
+			
+		if (IsWindow(myWnd)) {
+			if (IsDialogMessage(myWnd, &msg)) {
+				// processed
+				return;
+			}
+		}
+
+		TranslateMessage(&msg);
+		DispatchMessage(&msg);		// this will push it to the Window procedure
 	}
 }
 
@@ -123,51 +139,67 @@ void HandleDeviceChange(WPARAM wParam, LPARAM lParam) {
         // these are the actual events that we need to care about
         // (well, maybe not so much removal...)
         case DBT_DEVICEARRIVAL:
-            // TODO: I'm getting a types:
-            // USB (net.com) - 38 (0x26)...???
-            // Card reader - 114  (0x72)... (twice)
             switch (pHdr->dbch_devicetype) {
                 case DBT_DEVTYP_DEVICEINTERFACE:
-                    printf("added device\n");
+#ifdef _DEBUG
+                    myprintf("added device\n");
+#endif
                     break;
                 case DBT_DEVTYP_HANDLE:
-                    printf("added file system handle\n");
+#ifdef _DEBUG
+                    myprintf("added file system handle\n");
+#endif
                     break;
                 case DBT_DEVTYP_OEM:
-                    printf("added OEM device\n");
+#ifdef _DEBUG
+                    myprintf("added OEM device\n");
+#endif
                     break;
                 case DBT_DEVTYP_PORT:
-                    printf("added port (serial or parallel)\n");
+#ifdef _DEBUG
+                    myprintf("added port (serial or parallel)\n");
+#endif
                     break;
 
                 // this is the only one I care about
                 case DBT_DEVTYP_VOLUME:
-                    printf("Added a logical volume: ");
-                    // TODO: this is now working!!
-                    // TODO2: MSDN notes there is no guarantee you only get one
-                    // notification. We should probably throttle inbound starts
-                    // just in case (since we probably won't track removals).
-                    for (int idx=0; idx<26; ++idx) {
-                        if (pVol->dbcv_unitmask & (1<<idx)) {
-                            printf("%c: ", idx+'A');
+                    {
+                        static time_t lastInsert = (time_t)0;
+                        CString newDrives;
+                        myprintf("Added a logical volume: ");
+                        // MSDN notes there is no guarantee you only get one
+                        // notification. We should probably throttle inbound starts
+                        // just in case (since we probably won't track removals).
+                        for (int idx=0; idx<26; ++idx) {
+                            if (pVol->dbcv_unitmask & (1<<idx)) {
+                                myprintf("%c: ", idx+'A');
+                                newDrives += (wchar_t)(_T('A')+idx);
+                            }
+                        }
+                        // these flags don't show up, though...
+                        if (pVol->dbcv_flags&DBTF_MEDIA) {
+                            myprintf("(Removable) ");
+                        }
+                        if (pVol->dbcv_flags&DBTF_NET) {
+                            myprintf("(Network) ");
+                        }
+                        myprintf("\n");
+
+                        // Now trigger our operation
+                        time_t now = time_t(NULL);
+                        if ((now < lastInsert) || (now > lastInsert+5)) {
+                            // if less than 5 seconds since the last one, ignore
+                            myprintf("Throttling insert message... no action\n");
+                        } else {
+                            for (int idx=0; idx<newDrives.GetLength(); ++idx) {
+                                ProcessInsert(newDrives[idx]);
+                            }
                         }
                     }
-                    // these flags don't show up, though...
-                    if (pVol->dbcv_flags&DBTF_MEDIA) {
-                        printf("(Removable) ");
-                    }
-                    if (pVol->dbcv_flags&DBTF_NET) {
-                        printf("(Network) ");
-                    }
-                    printf("\n");
-
-                    // todo: testing removal
-                    Sleep(1000);
-                    EjectDrive("E");
                     break;
 
                 default:
-                    printf("Connected unknown type %d\n", pHdr->dbch_devicetype);
+                    myprintf("Connected unknown type %d\n", pHdr->dbch_devicetype);
                     break;
             }
             break;
@@ -175,39 +207,50 @@ void HandleDeviceChange(WPARAM wParam, LPARAM lParam) {
         case DBT_DEVICEREMOVECOMPLETE:
             switch (pHdr->dbch_devicetype) {
                 case DBT_DEVTYP_DEVICEINTERFACE:
-                    printf("removed device\n");
+#ifdef _DEBUG
+                    myprintf("removed device\n");
+#endif
                     break;
                 case DBT_DEVTYP_HANDLE:
-                    printf("removed file system handle\n");
+#ifdef _DEBUG
+                    myprintf("removed file system handle\n");
+#endif
                     break;
                 case DBT_DEVTYP_OEM:
-                    printf("removed OEM device\n");
+#ifdef _DEBUG
+                    myprintf("removed OEM device\n");
+#endif
                     break;
                 case DBT_DEVTYP_PORT:
-                    printf("removed port (serial or parallel)\n");
+#ifdef _DEBUG
+                    myprintf("removed port (serial or parallel)\n");
+#endif
                     break;
 
                 // this is the only one I care about
                 case DBT_DEVTYP_VOLUME:
-                    // TODO: this is working
-                    printf("Removed a logical volume: ");
+#ifdef _DEBUG
+                    myprintf("Removed a logical volume: ");
                     for (int idx=0; idx<26; ++idx) {
                         if (pVol->dbcv_unitmask & (1<<idx)) {
-                            printf("%c: ", idx+'A');
+                            myprintf("%c: ", idx+'A');
                         }
                     }
                     // again, these flags don't show up
                     if (pVol->dbcv_flags&DBTF_MEDIA) {
-                        printf("(Removable) ");
+                        myprintf("(Removable) ");
                     }
                     if (pVol->dbcv_flags&DBTF_NET) {
-                        printf("(Network) ");
+                        myprintf("(Network) ");
                     }
-                    printf("\n");
+                    myprintf("\n");
+#endif
                     break;
 
                 default:
-                    printf("Removed unknown type %d\n", pHdr->dbch_devicetype);
+#ifdef _DEBUG
+                    myprintf("Removed unknown type %d\n", pHdr->dbch_devicetype);
+#endif
                     break;
             }
             break;
@@ -227,78 +270,40 @@ void HandleDeviceChange(WPARAM wParam, LPARAM lParam) {
         case DBT_QUERYCHANGECONFIG:
         case DBT_USERDEFINED:
         default:
-            printf("Got device change message 0x%llx(0x%llx)\n", wParam, lParam);
+#ifdef _DEBUG
+            myprintf("Got device change message 0x%llx(0x%llx)\n", wParam, lParam);
+#endif
             break;
 
     }
 }
 
-// Input MUST be a drive letter!!
-bool EjectDrive(const char* pStr) {
-    // very likely this is the right answer, thansk to Andreas Magnusson at
-    // https://stackoverflow.com/questions/58670/windows-cdrom-eject
-    // Further notes by James Johnston
-    // They in turn link to 
-    // https://support.microsoft.com/en-us/help/165721/how-to-ejecting-removable-media-in-windows-nt-windows-2000-windows-xp
-    TCHAR tmp[10];
-    _stprintf_s(tmp, _T("\\\\.\\%c:"), pStr[0]);
-    // open the volume like "\\.\C:"
-    HANDLE handle = CreateFile(tmp, GENERIC_READ|GENERIC_WRITE, FILE_SHARE_READ|FILE_SHARE_WRITE, 0, OPEN_EXISTING, 0, 0);
-    if (INVALID_HANDLE_VALUE == handle) {
-        printf("Failed to open volume, code %d\n", GetLastError());
-        CloseHandle(handle);
-        return false;
+// create the tray icon
+void CreateTrayIcon() {
+    memset(&icon, 0, sizeof(icon));
+    icon.cbSize = sizeof(icon);
+    icon.hWnd = myWnd;
+    icon.uID = 0;
+    icon.uFlags = NIF_MESSAGE|NIF_TIP|NIF_ICON;
+    icon.uCallbackMessage = WM_USER;
+    icon.hIcon=LoadIcon(NULL, IDI_SHIELD);
+    wcscpy_s(icon.szTip, _T("Tursicopy: dbl-click to exit"));
+    icon.dwState = 0;
+    icon.dwStateMask = 0;
+    icon.uVersion = 0;
+    if (!Shell_NotifyIcon(NIM_ADD, &icon)) {
+        // not much we can do, but not critical either
+        myprintf("Failed to add shell icon\n");
     }
-    DWORD bytes = 0;
-    // Lock the volume by issuing the FSCTL_LOCK_VOLUME IOCTL via DeviceIoControl. 
-    // If any other application or the system is using the volume, this IOCTL fails. 
-    // Once this function returns successfully, the application is guaranteed that 
-    // the volume is not used by anything else in the system.
-    // MSDN tries this a few times, just in case
-    for (int idx=10; idx>=0; --idx) {
-        if (!DeviceIoControl(handle, FSCTL_LOCK_VOLUME, 0, 0, 0, 0, &bytes, 0)) {
-            if (idx == 0) {
-                printf("Failed to lock volume (in use?) Code %d\n", GetLastError());
-                CloseHandle(handle);
-                return false;
-            }
-            Sleep(500);
-            continue;
-        }
-        break;
-    }
+}
 
-    // Dismount the volume by issuing the FSCTL_DISMOUNT_VOLUME IOCTL. 
-    // This causes the file system to remove all knowledge of the volume and to 
-    // discard any internal information that it keeps regarding the volume.
-    if (!DeviceIoControl(handle, FSCTL_DISMOUNT_VOLUME, 0, 0, 0, 0, &bytes, 0)) {
-        printf("Failed to dismount volume... Code %d\n", GetLastError());
-        // should we unlock?
-        DeviceIoControl(handle, FSCTL_UNLOCK_VOLUME, 0, 0, 0, 0, &bytes, 0);
-        CloseHandle(handle);
-        return false;
-    }
-
-    // Make sure the media can be removed by issuing the IOCTL_STORAGE_MEDIA_REMOVAL IOCTL. 
-    // Set the PreventMediaRemoval member of the PREVENT_MEDIA_REMOVAL structure to FALSE 
-    // before calling this IOCTL. This clears any previous lock on the media.
-    // Note that the system can not eject things like USB sticks, only CDs and tapes,
-    // so a failure at this point is EXPECTED.
-    PREVENT_MEDIA_REMOVAL PMRBuffer;
-    PMRBuffer.PreventMediaRemoval = FALSE;
-    if (!DeviceIoControl(handle, IOCTL_STORAGE_MEDIA_REMOVAL, &PMRBuffer, sizeof(PMRBuffer), 0, 0, &bytes, 0)) {
-        printf("Media can not be ejected, but it is safe to remove... code %d\n", GetLastError());
-    } else {
-        // Eject the media with the IOCTL_STORAGE_EJECT_MEDIA IOCTL. This is skipped if the
-        // previous IOCTL indicated that ejection is not possible.
-        if (!DeviceIoControl(handle, IOCTL_STORAGE_EJECT_MEDIA, 0, 0, 0, 0, &bytes, 0)) {
-            printf("Failed to eject volume, but it is safe to remove... code %d\n", GetLastError());
+void RemoveTrayIcon() {
+    if (icon.cbSize) {
+        if (!Shell_NotifyIcon(NIM_DELETE, &icon)) {
+            // not much we can do, but not critical either
+#ifdef _DEBUG
+            myprintf("Failed to remove shell icon\n");
+#endif
         }
     }
-
-    // Close the volume handle obtained in the first step or issue the 
-    // FSCTL_UNLOCK_VOLUME IOCTL. This allows the drive to be used by other processes.
-    // (For devices like CDROMs which are still attached).
-    CloseHandle(handle);
-    return true;
 }
