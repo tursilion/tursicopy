@@ -967,7 +967,7 @@ void DeleteOrphans() {
         HANDLE hFind = FindFirstFile(formatPath(search), &findDat);
         if (INVALID_HANDLE_VALUE == hFind) {
             myprintf("Failed to open source folder: code %d\n", GetLastError());
-            return false;
+            return;
         }
         FindClose(hFind);
     }
