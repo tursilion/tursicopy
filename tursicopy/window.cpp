@@ -19,6 +19,7 @@ NOTIFYICONDATA icon;
 void myprintf(char *fmt, ...);
 void ProcessInsert(wchar_t letter);
 extern int errs;
+extern bool verbose;
 
 void HandleDeviceChange(WPARAM wParam, LPARAM lParam);
 bool EjectDrive(CString pStr);
@@ -229,22 +230,22 @@ void HandleDeviceChange(WPARAM wParam, LPARAM lParam) {
 
                 // this is the only one I care about
                 case DBT_DEVTYP_VOLUME:
-#ifdef _DEBUG
-                    myprintf("Removed a logical volume: ");
-                    for (int idx=0; idx<26; ++idx) {
-                        if (pVol->dbcv_unitmask & (1<<idx)) {
-                            myprintf("%c: ", idx+'A');
+                    if (verbose) {
+                        myprintf("Removed a logical volume: ");
+                        for (int idx=0; idx<26; ++idx) {
+                            if (pVol->dbcv_unitmask & (1<<idx)) {
+                                myprintf("%c: ", idx+'A');
+                            }
                         }
+                        // again, these flags don't show up
+                        if (pVol->dbcv_flags&DBTF_MEDIA) {
+                            myprintf("(Removable) ");
+                        }
+                        if (pVol->dbcv_flags&DBTF_NET) {
+                            myprintf("(Network) ");
+                        }
+                        myprintf("\n");
                     }
-                    // again, these flags don't show up
-                    if (pVol->dbcv_flags&DBTF_MEDIA) {
-                        myprintf("(Removable) ");
-                    }
-                    if (pVol->dbcv_flags&DBTF_NET) {
-                        myprintf("(Network) ");
-                    }
-                    myprintf("\n");
-#endif
                     break;
 
                 default:
@@ -301,9 +302,9 @@ void RemoveTrayIcon() {
     if (icon.cbSize) {
         if (!Shell_NotifyIcon(NIM_DELETE, &icon)) {
             // not much we can do, but not critical either
-#ifdef _DEBUG
-            myprintf("Failed to remove shell icon\n");
-#endif
+            if (verbose) {
+                myprintf("Failed to remove shell icon\n");
+            }
         }
     }
 }

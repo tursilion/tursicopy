@@ -9,6 +9,7 @@
 
 void myprintf(char *fmt, ...);
 extern int errs;
+extern bool verbose;
 
 // Enable/disable based on https://stackoverflow.com/questions/1438371/win32-api-function-to-programmatically-enable-disable-device
 bool EnableDisk(const CString& instanceId, bool enable);
@@ -44,9 +45,9 @@ bool EnableDisk(const CString& instanceId, bool enable)
     // Verify that we got one and only one device
     std::vector<SP_DEVINFO_DATA> diData = GetDeviceInfoData(diSetHandle);
 
-#ifdef _DEBUG
-    myprintf("Got %d devices in class...\n", diData.size());
-#endif
+    if (verbose) {
+        myprintf("Got %d devices in disk class...\n", diData.size());
+    }
 
     if (diData.size() < 1) {
         myprintf("Could not find any devices to control.\n");
@@ -60,11 +61,19 @@ bool EnableDisk(const CString& instanceId, bool enable)
     SetupDiDestroyDeviceInfoList(diSetHandle);
         return false;
     }
+    if (verbose) {
+        myprintf("Matched index %d...\n", index);
+    }
+
     if (!EnableDevice(diSetHandle, diData[index], enable)) {
         myprintf("Device action failed!\n");
         SetupDiDestroyDeviceInfoList(diSetHandle);
         ++errs;
         return false;
+    }
+
+    if (verbose) {
+        myprintf("%sable succeeded...\n", enable?"en":"dis");
     }
 
     SetupDiDestroyDeviceInfoList(diSetHandle);
@@ -108,6 +117,8 @@ int GetIndexOfInstance(HDEVINFO handle, std::vector<SP_DEVINFO_DATA>& diData, co
         } else {
             if (instanceId.CompareNoCase(strout) == 0) {
                 return index;
+            } else if (verbose) {
+                myprintf("Did not match device %d: %S\n", index, strout);
             }
         }
     }
@@ -173,6 +184,8 @@ bool EnableDevice(HDEVINFO handle, SP_DEVINFO_DATA& diData, bool enable)
 }
 
 // Input MUST be a drive letter!!
+// the steps in this function succeed, but a USB drive isn't actually removed
+// at the end of it. I think for now I'll just disable this.
 bool EjectDrive(CString pStr) {
     // very likely this is the right answer, thansk to Andreas Magnusson at
     // https://stackoverflow.com/questions/58670/windows-cdrom-eject

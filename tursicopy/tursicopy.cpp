@@ -32,8 +32,10 @@ int lastBackup = -1;
 CString fmtStr = "%s~~[%d]";
 int errs = 0;
 bool bAutoMode = false;
-bool pauseOnErrs = false;
+bool pauseOnErrs = true;
+bool pauseAlways = false;
 bool mountOk = false;
+bool verbose = false;
 HANDLE hLog = INVALID_HANDLE_VALUE;
 
 // window thread
@@ -72,7 +74,7 @@ void MoveOneFile(CString &path, WIN32_FIND_DATA &findDat);
 void ConfirmOneFile(CString& path, WIN32_FIND_DATA &findDat);
 void ConfirmOneFolder(CString& path, WIN32_FIND_DATA &findDat);
 void RecursivePath(CString &path, CString subPath, HANDLE hFind, WIN32_FIND_DATA& findDat, bool backingup);
-void DoNewBackup();
+bool DoNewBackup();
 void DeleteOrphans();
 // hardware.ccp
 bool EnableDisk(const CString& instanceId, bool enable);
@@ -133,6 +135,7 @@ void print_usage() {
     myprintf("  tursicopy <src_path> <dest_path>\n    - backs up from src_path to dest_path with default values\n");
     myprintf("  tursicopy /now profile.txt\n    - backs up using a profile configuration\n");
     myprintf("  tursicopy /watch\n    - wait for a removable drive with a 'tursicopy_profile.txt' to be attached\n");
+    myprintf("  tursicopy /default\n    - print the default profile.txt (copy and paste to create a new one)\n");
 }
 
 // set default values
@@ -174,6 +177,8 @@ void PrintProfile() {
     myprintf("EnableDevice=%S\n", enableDevice.GetString());
     myprintf("UnmountDevice=%d\n", unmountDevice?1:0);
     myprintf("PauseOnErrors=%d\n", pauseOnErrs?1:0);
+    myprintf("PauseAlways=%d\n", pauseAlways?1:0);
+    myprintf("Verbose=%d\n", verbose?1:0);
 
     myprintf("\n[Tuning]\n");
     myprintf("Reserve=%llu\n", reserve.QuadPart/1000000);
@@ -238,6 +243,8 @@ bool ReadProfile(const CString &profile) {
             string[p]='\0';
         }
         if (p <= 0) continue;
+        // skip comments
+        if ((string[0]==';')||(string[0]=='#')) continue;
     
         // is it a section header?
         if (string[0]=='[') {
@@ -325,6 +332,30 @@ bool ReadProfile(const CString &profile) {
                             gotSomething = true;
                         } else {
                             myprintf("Couldn't parse value for PauseOnErrors (0/1) [PARANOID]: %s\n", string);
+                            fclose(fp);
+                            return false;
+                        }
+                    } else if (key.CompareNoCase(_T("PauseAlways")) == 0) {
+                        if (val.Compare(_T("0")) == 0) {
+                            pauseAlways = false;
+                            gotSomething = true;
+                        } else if (val.Compare(_T("1")) == 0) {
+                            pauseAlways = true;
+                            gotSomething = true;
+                        } else {
+                            myprintf("Couldn't parse value for PauseAlways (0/1) [PARANOID]: %s\n", string);
+                            fclose(fp);
+                            return false;
+                        }
+                    } else if (key.CompareNoCase(_T("Verbose")) == 0) {
+                        if (val.Compare(_T("0")) == 0) {
+                            verbose = false;
+                            gotSomething = true;
+                        } else if (val.Compare(_T("1")) == 0) {
+                            verbose = true;
+                            gotSomething = true;
+                        } else {
+                            myprintf("Couldn't parse value for Verbose (0/1) [PARANOID]: %s\n", string);
                             fclose(fp);
                             return false;
                         }
@@ -484,14 +515,18 @@ bool LoadConfig(int argc, char *argv[]) {
     }
 
     // no? then it must be a switch controlled mode
+
+    // just a helper mode used to get a default profile
+    if (strcmp(argv[1], "/default") == 0) {
+        PrintProfile();
+        return false;
+    }
+
     // this is an internal mode used by the USB detection - it works the
     // same as 'now' but in this mode ONLY we will honor the UnmountDevice flag
     bAutoMode = false;
     if (strcmp(argv[1], "/auto") == 0) {
         bAutoMode = true;
-        // overwrite the enableDevice with the detected drive
-        // the location is the drive containing the profile file
-        enableDevice = argv[2];
     }
 
     // immediately read the profile file and execute it
@@ -507,11 +542,6 @@ bool LoadConfig(int argc, char *argv[]) {
             return false;
 	    }
 
-        if (enableDevice.GetLength() == 0) {
-            // to avoid confusion later, don't unmount if we aren't mounting
-            unmountDevice = false;
-        }
-
         if (bAutoMode) {
             // update the dest path with the letter of the USB device
             baseDest.SetAt(0, profile[0]);
@@ -519,6 +549,16 @@ bool LoadConfig(int argc, char *argv[]) {
             if (logfile.GetLength() > 0) {
                 logfile.SetAt(0, profile[0]);
             }
+        }
+
+        if (bAutoMode) {
+            // overwrite the enableDevice with the detected drive
+            // the location is the drive containing the profile file
+            enableDevice = profile.Left(2) + " (detected)";
+        }
+        if (enableDevice.GetLength() == 0) {
+            // to avoid confusion later, don't unmount if we aren't mounting
+            unmountDevice = false;
         }
 
         // we're happy then, go for it!
@@ -608,35 +648,31 @@ void goodbye() {
     RemoveTrayIcon();
     Sleep(100);
 
-    // do we need to unmount?
-    if ((mountOk) && (unmountDevice)) {
-        // now is it a USB unmount or a device disable?
-        if (bAutoMode) {
-            // USB unmount - this does not guarantee inaccessibility
-            EjectDrive(enableDevice);
-        } else {
-            // hardware disable
-            EnableDisk(enableDevice, false);
-        }
-    }
-
     // report
     myprintf("\n-- DONE -- %d errs.\n", errs);
     if (INVALID_HANDLE_VALUE != hLog) {
         CloseHandle(hLog);
     }
 
-#ifdef _DEBUG
-    if (errs) {
-        myprintf("\n-- DONE -- %d errs.\n", errs);
-        myprintf("Press a key...\n");
+    // do we need to unmount? (this may cause extra errors, but we can't log them)
+    if ((mountOk) && (unmountDevice)) {
+        // now is it a USB unmount or a device disable?
+        if (bAutoMode) {
+            // USB unmount - this does not guarantee inaccessibility
+            // TODO: this is not actually working - the code succeeds but the
+            // drive is not removed. For now, nobody's asking for that.
+//            if (!EjectDrive(enableDevice)) ++errs;
+        } else {
+            // hardware disable
+            if (!EnableDisk(enableDevice, false)) ++errs;
+        }
     }
-    while (!_kbhit()) {}
-#else
-    if ((errs)&&(pauseOnErrs)) {
-    myprintf("Press a key...\n");
-    while (!_kbhit()) {}
-#endif
+
+    if (((errs)&&(pauseOnErrs)) || (pauseAlways)) {
+        myprintf("Press a key...\n");
+        while (!_kbhit()) {}
+    }
+
     exit(-1);
 }
 
@@ -666,9 +702,9 @@ void RotateOldBackups(CString dest) {
         CString oldFolder, newFolder;
         oldFolder.Format(fmtStr, dest, idx);
         newFolder.Format(fmtStr, dest, idx+1);
-#ifdef _DEBUG
-        myprintf("%S -> %S\n", oldFolder.GetString(), newFolder.GetString());
-#endif
+        if (verbose) {
+            myprintf("%S -> %S\n", oldFolder.GetString(), newFolder.GetString());
+        }
         if (!MoveFileEx(formatPath(oldFolder), formatPath(newFolder), MOVEFILE_WRITE_THROUGH)) {
             myprintf("- MoveFile failed, code %d\n", GetLastError());
         }
@@ -731,9 +767,9 @@ void MoveOneFile(CString &path, WIN32_FIND_DATA &findDat) {
         if ((timeOk) && 
             (info.nFileSizeHigh == findDat.nFileSizeHigh) && 
             (info.nFileSizeLow == findDat.nFileSizeLow)) {
-#ifdef _DEBUG
-            myprintf("SAME: %s\n", W2A(destFile.GetString()));
-#endif
+            if (verbose) {
+                myprintf("SAME: %s\n", W2A(destFile.GetString()));
+            }
             return;
         }
 
@@ -847,9 +883,9 @@ void RecursivePath(CString &path, CString subPath, HANDLE hFind, WIN32_FIND_DATA
             if (findDat.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) continue;
             if (findDat.dwFileAttributes & FILE_ATTRIBUTE_TEMPORARY) continue;
 
-#ifdef _DEBUG
-            myprintf("%S%S%S\n", path.GetString(), subPath.GetString(), findDat.cFileName);
-#endif
+            if (verbose) {
+                myprintf("%S%S%S\n", path.GetString(), subPath.GetString(), findDat.cFileName);
+            }
 
             // make sure this folder exists on the target
             if (backingup) {
@@ -892,20 +928,22 @@ void RecursivePath(CString &path, CString subPath, HANDLE hFind, WIN32_FIND_DATA
     } while (FindNextFile(hFind, &findDat));
 }
 
-void DoNewBackup() {
+bool DoNewBackup() {
     // recursively copy any changed files (by size or timestamp) from the old folder to the new.
+    // returns false if the copy could not start -- this prevents an orphan purge from running
     CString search = src + "*";
     WIN32_FIND_DATA findDat;
 
     myprintf("Searching for new or changed files...\n");
-
+    
     HANDLE hFind = FindFirstFile(formatPath(search), &findDat);
     if (INVALID_HANDLE_VALUE == hFind) {
         myprintf("Failed to open search: code %d\n", GetLastError());
-        return;
+        return false;
     }
     RecursivePath(src, "", hFind, findDat, true);
     FindClose(hFind);
+    return true;
 }
 
 /////////////////////////////////////////////////////////////////////////
@@ -915,6 +953,24 @@ void DeleteOrphans() {
     // similar to backup, but runs backwards and moves any files
     // that were no longer in the src folder
     myprintf("Remove orphaned files...\n");
+
+    // first let's just make sure the source folder exists...
+    // if it doesn't on purpose, delete the files by hand
+    {
+        CString search = src + "*";
+        WIN32_FIND_DATA findDat;
+
+        if (verbose) {
+            myprintf("Checking source folder...\n");
+        }
+    
+        HANDLE hFind = FindFirstFile(formatPath(search), &findDat);
+        if (INVALID_HANDLE_VALUE == hFind) {
+            myprintf("Failed to open source folder: code %d\n", GetLastError());
+            return false;
+        }
+        FindClose(hFind);
+    }
 
     CString search = dest + "*";
     WIN32_FIND_DATA findDat;
@@ -973,9 +1029,9 @@ void ProcessInsert(wchar_t letter) {
 
     if (!CheckExists(csPath)) {
         // nope, just ignore it
-#ifdef _DEBUG
-        myprintf("%S is not present, skipping\n", csPath);
-#endif
+        if (verbose) {
+            myprintf("%S is not present, skipping\n", csPath);
+        }
         return;
     }
     
@@ -1031,12 +1087,15 @@ int main(int argc, char *argv[])
     PrintProfile();
 
     // check whether we need to mount the backup device
-    if (enableDevice.GetLength() > 0) {
+    // (in auto mode, enableDevice is the inserted memory stick)
+    if ((enableDevice.GetLength() > 0) && (!bAutoMode)) {
         if (!EnableDisk(enableDevice, true)) {
             myprintf("Failed to enable device, can not proceed.\n");
             ++errs;
             goodbye();
         }
+        // we should pause to let things sync up
+        Sleep(5000);
     }
     mountOk = true;
 
@@ -1044,19 +1103,35 @@ int main(int argc, char *argv[])
     myprintf("Preparing backup folder %s\n", W2A(baseDest.GetString()));
     
     // make sure the destination folder exists - need this before we check disk space
-    if (!MoveToFolder(_T(""), baseDest)) {
-        myprintf("Failed to create target folder. Can't continue.\n");
-        ++errs;
-        goodbye();
-        return -1;
-    }
+    // if we just enabled, we may need a few seconds before this works, so we'll loop
+    // on error 3 only
+    for (int errCnt = 10; errCnt >= 0; --errCnt) {
+        myprintf("Verifying target folder...\n");
+        if (!MoveToFolder(_T(""), baseDest)) {
+            if (((GetLastError() != ERROR_PATH_NOT_FOUND)&&(GetLastError() != ERROR_FILE_NOT_FOUND)) || (errCnt <= 0)) {
+                myprintf("Failed to create target folder. Can't continue.\n");
+                ++errs;
+                goodbye();
+                return -1;
+            }
 
-    myprintf("Checking destination free disk space... ");
-    if (!GetDiskFreeSpaceEx(baseDest, &freeUser, &totalBytes, &freeBytes)) {
-        myprintf("Failed. Error %d\n", GetLastError());
-        ++errs;
-        goodbye();
-        return -1;
+            Sleep(1000);
+            continue;
+        }
+
+        myprintf("Checking destination free disk space... ");
+        if (!GetDiskFreeSpaceEx(baseDest, &freeUser, &totalBytes, &freeBytes)) {
+            if ((GetLastError() != ERROR_PATH_NOT_FOUND) || (errCnt <= 0)) {
+                myprintf("Failed. Error %d\n", GetLastError());
+                ++errs;
+                goodbye();
+                return -1;
+            }
+            Sleep(1000);
+            continue;
+        }
+
+        break;
     }
 
     myprintf("Got %llu bytes.\n", freeUser.QuadPart);
@@ -1106,7 +1181,12 @@ int main(int argc, char *argv[])
             }
 
             if (doBackup) { 
-                DoNewBackup();
+                if (!DoNewBackup()) {
+                    if (deleteOld) {
+                        myprintf("Failed to start backup, skipping purge of orphans!\n");
+                        deleteOld = false;
+                    }
+                }
             }
             if (deleteOld) {
                 DeleteOrphans();
