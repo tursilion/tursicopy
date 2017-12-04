@@ -108,7 +108,8 @@ void myprintf(char *fmt, ...) {
             s=p+2;
         }
         strcat_s(buf, "\r");
-        WriteFile(hLog, buf, (DWORD)strlen(buf), NULL, NULL);
+        DWORD out;
+        WriteFile(hLog, buf, (DWORD)strlen(buf), &out, NULL);
     }
 }
 
