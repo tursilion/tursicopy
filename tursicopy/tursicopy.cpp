@@ -481,7 +481,7 @@ bool LoadConfig(int argc, char *argv[]) {
 
     // report information
     for (int idx=0; idx<argc; ++idx) {
-        myprintf("%s ", argv[idx]);
+        myprintf("'%s'\n", argv[idx]);
     }
     myprintf("\n");
 
@@ -839,7 +839,8 @@ void MoveOneFile(CString &path, WIN32_FIND_DATA &findDat) {
     // finally do the copy
     myprintf("COPY: %s -> %s\n", W2A(srcFile.GetString()), W2A(destFile.GetString()));
     BOOL cancel = FALSE;
-    // CopyFile2 can preserve attributes!
+#if 0
+    // CopyFile2 can preserve attributes (like symlinks)! But requires Windows 8.
     COPYFILE2_EXTENDED_PARAMETERS param;
     param.dwSize=sizeof(param);
     param.dwCopyFlags = COPY_FILE_COPY_SYMLINK | COPY_FILE_FAIL_IF_EXISTS;
@@ -847,6 +848,9 @@ void MoveOneFile(CString &path, WIN32_FIND_DATA &findDat) {
     param.pProgressRoutine = NULL;
     param.pvCallbackContext = NULL;
     if (!SUCCEEDED(CopyFile2(formatPath(srcFile), formatPath(destFile), &param))) {
+#else
+    if (!CopyFile(formatPath(srcFile), formatPath(destFile), TRUE)) {
+#endif
         myprintf("** Failed to copy file -- Code %d\n", GetLastError());
         ++errs;
         return;
