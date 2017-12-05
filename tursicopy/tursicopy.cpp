@@ -4,9 +4,8 @@
 // And I don't care that it's not configurable yet. ;) I need it working now.
 //
 // Oh, license. Right. "Mine. If you want to use it, have fun. If you want to
-// exploit it, contact me." Thanks. tursi - harmlesslion.com
-
-// almost big enough to start breaking up... ;)
+// exploit it, contact me. All problems are yours, even if I made them." 
+// Thanks. tursi - harmlesslion.com
 
 #include "stdafx.h"
 #include <iostream>
@@ -18,6 +17,8 @@
 #include <vector>
 #include <atlbase.h>
 #include <atlconv.h>
+
+#define MYVERSION "100"
 
 CString src, dest, logfile;
 CString workingFolder;
@@ -79,6 +80,7 @@ void DeleteOrphans();
 // hardware.ccp
 bool EnableDisk(const CString& instanceId, bool enable);
 bool EjectDrive(CString pStr);
+bool FlushDrive(CString pStr);
 
 /////////////////////////////////////////////////////////////////////////
 
@@ -107,10 +109,13 @@ void myprintf(char *fmt, ...) {
             ++sz;
             s=p+2;
         }
-        strcat_s(buf, "\r");
         DWORD out;
         WriteFile(hLog, buf, (DWORD)strlen(buf), &out, NULL);
     }
+
+    // flush the console, but we let the log buffer
+    fflush(stdout);
+
 }
 
 // from https://stackoverflow.com/questions/8046097/how-to-check-if-a-process-has-the-administrative-rights
@@ -481,8 +486,9 @@ bool LoadConfig(int argc, char *argv[]) {
     csApp = argv[0];
 
     // report information
+    myprintf("Tursicopy " MYVERSION ". Command line:\n");
     for (int idx=0; idx<argc; ++idx) {
-        myprintf("'%s'\n", argv[idx]);
+        myprintf("'%s' ", argv[idx]);
     }
     myprintf("\n");
 
@@ -625,6 +631,7 @@ bool MoveToFolder(CString src, CString &dest) {
             if (err != ERROR_ALREADY_EXISTS) {
                 myprintf("Failed to create folder %S, code %d\n", tmp.GetString(), GetLastError());
                 ++errs;
+                return false;
             }
         }
     }
@@ -664,7 +671,20 @@ void goodbye() {
             // drive is not removed. For now, nobody's asking for that.
 //            if (!EjectDrive(enableDevice)) ++errs;
         } else {
-            // hardware disable
+            // flush file buffers (this does assume that the destPath points to the device with a drive letter)
+            if (baseDest[1] != ':') {
+                myprintf("DestPath is not a DOS device, can't request flush.\n");
+            } else {
+                FlushDrive(baseDest);
+            }
+            // the flush doesn't really help, but it's probably smart anyway
+            if (verbose) {
+                myprintf("Waiting 5 seconds for OS to finish flush...\n");
+            }
+            Sleep(5000);
+            // hardware disable - this may require reboot in ?? cases?
+            // I think it's pending buffer data - the FlushDrive should help,
+            // the sleep definitely does. Keeping both.
             if (!EnableDisk(enableDevice, false)) ++errs;
         }
     }
@@ -1100,6 +1120,9 @@ int main(int argc, char *argv[])
             goodbye();
         }
         // we should pause to let things sync up
+        if (verbose) {
+            myprintf("Waiting 5 seconds for OS to finish setup...\n");
+        }
         Sleep(5000);
     }
     mountOk = true;
@@ -1113,24 +1136,35 @@ int main(int argc, char *argv[])
     for (int errCnt = 10; errCnt >= 0; --errCnt) {
         myprintf("Verifying target folder...\n");
         if (!MoveToFolder(_T(""), baseDest)) {
-            if (((GetLastError() != ERROR_PATH_NOT_FOUND)&&(GetLastError() != ERROR_FILE_NOT_FOUND)) || (errCnt <= 0)) {
+            DWORD err = GetLastError();
+            if (((err != ERROR_PATH_NOT_FOUND) &&
+                 (err != ERROR_FILE_NOT_FOUND) && 
+                 (err != ERROR_NOT_READY) ) || (errCnt <= 0)) {
                 myprintf("Failed to create target folder. Can't continue.\n");
                 ++errs;
                 goodbye();
                 return -1;
             }
 
+            if (verbose) {
+                myprintf("Retrying, code %d\n", err);
+            }
             Sleep(1000);
             continue;
         }
 
         myprintf("Checking destination free disk space... ");
         if (!GetDiskFreeSpaceEx(baseDest, &freeUser, &totalBytes, &freeBytes)) {
-            if ((GetLastError() != ERROR_PATH_NOT_FOUND) || (errCnt <= 0)) {
+            DWORD err = GetLastError();
+            if (((err != ERROR_PATH_NOT_FOUND) &&
+                 (err != ERROR_NOT_READY) ) || (errCnt <= 0)) {
                 myprintf("Failed. Error %d\n", GetLastError());
                 ++errs;
                 goodbye();
                 return -1;
+            }
+            if (verbose) {
+                myprintf("Retrying, code %d\n", err);
             }
             Sleep(1000);
             continue;

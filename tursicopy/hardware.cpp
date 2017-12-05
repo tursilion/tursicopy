@@ -4,6 +4,7 @@
 #include <Windows.h>
 #include <atlstr.h>
 #include <setupapi.h>
+#include <cfgmgr32.h>
 #include <stdio.h>
 #include <vector>
 
@@ -57,7 +58,7 @@ bool EnableDisk(const CString& instanceId, bool enable)
     // Find the index of our instance.
     int index = GetIndexOfInstance(diSetHandle, diData, instanceId);
     if (-1 == index) {
-        myprintf("Failed to locate device with instance %s\n", instanceId);
+        myprintf("Failed to locate device with instance %S\n", instanceId);
     SetupDiDestroyDeviceInfoList(diSetHandle);
         return false;
     }
@@ -144,6 +145,167 @@ bool EnableDevice(HDEVINFO handle, SP_DEVINFO_DATA& diData, bool enable)
     // current hardware profile
     params.HwProfile = 0;
 
+    // see if we really need to do anything
+    ULONG devStatus(0), devProblemCode(0);
+    DWORD ret = CM_Get_DevNode_Status(&devStatus, &devProblemCode, diData.DevInst, 0);
+    if (ret != CR_SUCCESS) {
+        myprintf("Attempting to read device status returned error %ld, will try anyway.\n", ret);
+    } else {
+        if (verbose) {
+            myprintf("Status: 0x%llX\n", devStatus);
+            if (devStatus&DN_ROOT_ENUMERATED) myprintf("  Root enumerated\n");
+            if (devStatus&DN_DRIVER_LOADED) myprintf("  Driver loaded\n");
+            if (devStatus&DN_ENUM_LOADED) myprintf("  Enumerator loaded\n");
+            if (devStatus&DN_STARTED) myprintf("  Is started\n");
+            if (devStatus&DN_MANUAL) myprintf("  Manually installed\n");
+            if (devStatus&DN_NEED_TO_ENUM) myprintf("  Re-enumeration required\n");
+            if (devStatus&DN_NOT_FIRST_TIME) myprintf("  Already configured\n");
+            if (devStatus&DN_HARDWARE_ENUM) myprintf("  Has Hardware ID\n");
+            if (devStatus&DN_LIAR) myprintf("  Lied about reconfig (seriously!)\n");
+            if (devStatus&DN_HAS_MARK) myprintf("  Not created lately\n");
+            if (devStatus&DN_HAS_PROBLEM) myprintf("  Has problem (details follow)\n");
+            if (devStatus&DN_FILTERED) myprintf("  Filtered\n");
+            if (devStatus&DN_MOVED) myprintf("  Has moved\n");
+            if (devStatus&DN_DISABLEABLE) myprintf("  Can be disabled\n");
+            if (devStatus&DN_REMOVABLE) myprintf("  Can be removed\n");
+            if (devStatus&DN_PRIVATE_PROBLEM) myprintf("  Has a private problem\n");
+            if (devStatus&DN_MF_PARENT) myprintf("  Multi-function parent\n");
+            if (devStatus&DN_MF_CHILD) myprintf("  Multi-function child\n");
+            if (devStatus&DN_WILL_BE_REMOVED) myprintf("  Is being removed\n");
+            if (devStatus&DN_NOT_FIRST_TIMEE) myprintf("  Received config enumerate\n");
+            if (devStatus&DN_STOP_FREE_RES) myprintf("  Free resources on child stop\n");
+            if (devStatus&DN_REBAL_CANDIDATE) myprintf("  Don't skip during rebalance\n");
+            if (devStatus&DN_BAD_PARTIAL) myprintf("  Log_confs do not have the same resource\n");
+            if (devStatus&DN_NT_ENUMERATOR) myprintf("  NT Enumerator\n");
+            if (devStatus&DN_NT_DRIVER) myprintf("  NT Driver\n");
+            if (devStatus&DN_NEEDS_LOCKING) myprintf("  Needs lock resume\n");
+            if (devStatus&DN_ARM_WAKEUP) myprintf("  Available as wakeup device\n");
+            if (devStatus&DN_APM_ENUMERATOR) myprintf("  APM aware enumerator\n");
+            if (devStatus&DN_APM_DRIVER) myprintf("  APM aware driver\n");
+            if (devStatus&DN_SILENT_INSTALL) myprintf("  Silent install\n");
+            if (devStatus&DN_NO_SHOW_IN_DM) myprintf("  No show in device manager\n");
+            if (devStatus&DN_BOOT_LOG_PROB) myprintf("  Problem during boot log configuration\n");
+        }
+        if (devStatus & DN_HAS_PROBLEM) {
+            myprintf("Problem code: 0x%llX\n", devProblemCode);
+            switch (devProblemCode) {
+                case CM_PROB_NOT_CONFIGURED             : myprintf("  No configuration\n"); break;
+                case CM_PROB_DEVLOADER_FAILED           : myprintf("  Service load failed\n"); break;
+                case CM_PROB_OUT_OF_MEMORY              : myprintf("  Out of memory\n"); break;
+                case CM_PROB_ENTRY_IS_WRONG_TYPE        : myprintf("  Entry is wrong type\n"); break;
+                case CM_PROB_LACKED_ARBITRATOR          : myprintf("  Lacked arbitrator\n"); break;
+                case CM_PROB_BOOT_CONFIG_CONFLICT       : myprintf("  Boot config conflict\n"); break;
+                case CM_PROB_FAILED_FILTER              : myprintf("  Failed filter\n"); break;
+                case CM_PROB_DEVLOADER_NOT_FOUND        : myprintf("  Devloader not found\n"); break;
+                case CM_PROB_INVALID_DATA               : myprintf("  Invalid ID\n"); break;
+                case CM_PROB_FAILED_START               : myprintf("  Failed start\n"); break;
+                case CM_PROB_LIAR                       : myprintf("  Liar (yes, seriously)\n"); break;
+                case CM_PROB_NORMAL_CONFLICT            : myprintf("  Config conflict\n"); break;
+                case CM_PROB_NOT_VERIFIED               : myprintf("  Not verified\n"); break;
+                case CM_PROB_NEED_RESTART               : myprintf("  Requires restart\n"); break;
+                case CM_PROB_REENUMERATION              : myprintf("  Re-enumeration required\n"); break;
+                case CM_PROB_PARTIAL_LOG_CONF           : myprintf("  Partial log configuration\n"); break;
+                case CM_PROB_UNKNOWN_RESOURCE           : myprintf("  Unknown resource type\n"); break;
+                case CM_PROB_REINSTALL                  : myprintf("  Reinstall required\n"); break;
+                case CM_PROB_REGISTRY                   : myprintf("  Registry problem\n"); break;
+                case CM_PROB_VXDLDR                     : myprintf("  Windows 95 VXD Loader issue\n"); break;
+                case CM_PROB_WILL_BE_REMOVED            : myprintf("  Will be removed\n"); break;
+                case CM_PROB_DISABLED                   : myprintf("  Devinst is disabled\n"); break;
+                case CM_PROB_DEVLOADER_NOT_READY        : myprintf("  Devloader is not ready\n"); break;
+                case CM_PROB_DEVICE_NOT_THERE           : myprintf("  Device doesn't exist\n"); break;
+                case CM_PROB_MOVED                      : myprintf("  Moved\n"); break;
+                case CM_PROB_TOO_EARLY                  : myprintf("  Too early\n"); break;
+                case CM_PROB_NO_VALID_LOG_CONF          : myprintf("  No valid log config\n"); break;
+                case CM_PROB_FAILED_INSTALL             : myprintf("  Install failed\n"); break;
+                case CM_PROB_HARDWARE_DISABLED          : myprintf("  Device disabled\n"); break;
+                case CM_PROB_CANT_SHARE_IRQ             : myprintf("  Can't share IRQ\n"); break;
+                case CM_PROB_FAILED_ADD                 : myprintf("  Driver add failed\n"); break;
+                case CM_PROB_DISABLED_SERVICE           : myprintf("  Service start disabled\n"); break;
+                case CM_PROB_TRANSLATION_FAILED         : myprintf("  Resource translation failed\n"); break;
+                case CM_PROB_NO_SOFTCONFIG              : myprintf("  No soft config\n"); break;
+                case CM_PROB_BIOS_TABLE                 : myprintf("  Device missing in BIOS table\n"); break;
+                case CM_PROB_IRQ_TRANSLATION_FAILED     : myprintf("  IRQ translator failed\n"); break;
+                case CM_PROB_FAILED_DRIVER_ENTRY        : myprintf("  DriverEntry() failed\n"); break;
+                case CM_PROB_DRIVER_FAILED_PRIOR_UNLOAD : myprintf("  Driver should have unloaded\n"); break;
+                case CM_PROB_DRIVER_FAILED_LOAD         : myprintf("  Driver load unsuccessful\n"); break;
+                case CM_PROB_DRIVER_SERVICE_KEY_INVALID : myprintf("  Error accessing driver's service key\n"); break;
+                case CM_PROB_LEGACY_SERVICE_NO_DEVICES  : myprintf("  Legacy service created no devices\n"); break;
+                case CM_PROB_DUPLICATE_DEVICE           : myprintf("  Two devices discovered with the same name\n"); break;
+                case CM_PROB_FAILED_POST_START          : myprintf("  Driver set its state to failed\n"); break;
+                case CM_PROB_HALTED                     : myprintf("  Device failed post start via usermode\n"); break;
+                case CM_PROB_PHANTOM                    : myprintf("  Devinst exists only in the registry\n"); break;
+                case CM_PROB_SYSTEM_SHUTDOWN            : myprintf("  System is shutting down\n"); break;
+                case CM_PROB_HELD_FOR_EJECT             : myprintf("  Offline awaiting removal\n"); break;
+                case CM_PROB_DRIVER_BLOCKED             : myprintf("  One or more drivers blocked from loading\n"); break;
+                case CM_PROB_REGISTRY_TOO_LARGE         : myprintf("  System hive has grown too large\n"); break;
+                case CM_PROB_SETPROPERTIES_FAILED       : myprintf("  Failed to apply registry properties\n"); break;
+                case CM_PROB_WAITING_ON_DEPENDENCY      : myprintf("  Device stalled waiting for dependency to start\n"); break;
+                case CM_PROB_UNSIGNED_DRIVER            : myprintf("  Failed to load due to unsigned driver\n"); break;
+                case CM_PROB_USED_BY_DEBUGGER           : myprintf("  Used by kernel debugger\n"); break;
+                case CM_PROB_DEVICE_RESET               : myprintf("  Device is being reset\n"); break;
+                case CM_PROB_CONSOLE_LOCKED             : myprintf("  Console is locked\n"); break;
+                case CM_PROB_NEED_CLASS_CONFIG          : myprintf("  Device needs extended class configuration\n"); break;
+            }
+            // if it's disabled and we're enabling, that's not a problem ;)
+            if (devProblemCode == CM_PROB_DISABLED) {
+                if (enable == false) {
+                    // again, that's what we wanted
+                    myprintf("Device was already disabled...\n");
+                    return true;
+                }
+            }
+            // else that's what we aim to change
+            if (devProblemCode != CM_PROB_DISABLED) {
+                // no sense continuing on problem device, it won't work anyway
+                return false;
+            }
+        }
+
+        // check if the device state meets requirements
+        if (enable) {
+            // then it must be disabled ;)
+            if (devStatus&DN_STARTED) {
+                // it's already running
+                if (verbose) {
+                    myprintf("Device is already running.\n");
+                }
+                return true;
+            }
+        } else {
+            // then it must be started and disableable
+            if (!(devStatus&DN_STARTED)) {
+                // it's already disabled
+                if (verbose) {
+                    myprintf("Device is already disabled.\n");
+                }
+                return true;
+            }
+            // maybe we can loop on this if it's not?
+            if (!(devStatus&DN_DISABLEABLE)) {
+                
+                for (int idx=10; idx>=0; --idx) {
+                    if (verbose) {
+                        myprintf("Not disablable... retrying...\n");
+                    }
+                    Sleep(500);
+
+                    DWORD ret = CM_Get_DevNode_Status(&devStatus, &devProblemCode, diData.DevInst, 0);
+                    if (ret != CR_SUCCESS) {
+                        myprintf("Error occurred on subsequent status check - code %d\n", ret);
+                        return false;
+                    }
+
+                    if (devStatus&DN_DISABLEABLE) break;
+
+                    if (idx <= 0) {
+                        myprintf("Timed out waiting to become disablable. Giving up.\n");
+                        return false;
+                    }
+                }
+            }
+        }
+    }
+
     bool result = SetupDiSetClassInstallParams(handle, &diData, (SP_CLASSINSTALL_HEADER*)&params, sizeof(params));
     if (!result) {
         myprintf("Failed on SetClassInstallParams, error %d\n", GetLastError());
@@ -162,7 +324,7 @@ bool EnableDevice(HDEVINFO handle, SP_DEVINFO_DATA& diData, bool enable)
         } else if (err >= 0xe0000200 && err <= 0xe0000245) {
             myprintf("SetupAPI error: 0x%08X\n", err);
         } else {
-            myprintf("Class Installer failed with code 0x%08X (enable:%d)\n", err, enable);
+            myprintf("Class Installer failed with code 0x%08X (enable:%d)\nA reboot may be required.\n", err, enable);
         }
         return false;
     }
@@ -180,6 +342,7 @@ bool EnableDevice(HDEVINFO handle, SP_DEVINFO_DATA& diData, bool enable)
         }
     }
 
+    myprintf("Operation succeeded.\n");
     return true;
 }
 
@@ -200,7 +363,6 @@ bool EjectDrive(CString pStr) {
     HANDLE handle = CreateFile(tmp, GENERIC_READ|GENERIC_WRITE, FILE_SHARE_READ|FILE_SHARE_WRITE, 0, OPEN_EXISTING, 0, 0);
     if (INVALID_HANDLE_VALUE == handle) {
         myprintf("Failed to open volume, code %d\n", GetLastError());
-        CloseHandle(handle);
         return false;
     }
     DWORD bytes = 0;
@@ -253,6 +415,34 @@ bool EjectDrive(CString pStr) {
     // Close the volume handle obtained in the first step or issue the 
     // FSCTL_UNLOCK_VOLUME IOCTL. This allows the drive to be used by other processes.
     // (For devices like CDROMs which are still attached).
+    CloseHandle(handle);
+    return true;
+}
+
+// Input MUST be a drive letter!!
+// attempts to flush all pending data on a drive
+// this requires administrative access too
+bool FlushDrive(CString pStr) {
+    TCHAR tmp[10];
+    _stprintf_s(tmp, _T("\\\\.\\%c:"), pStr[0]);
+    if (verbose) {
+        myprintf("Flushing %S\n", tmp);
+    }
+
+    // open the volume like "\\.\C:"
+    HANDLE handle = CreateFile(tmp, GENERIC_READ|GENERIC_WRITE, FILE_SHARE_READ|FILE_SHARE_WRITE, 0, OPEN_EXISTING, 0, 0);
+    if (INVALID_HANDLE_VALUE == handle) {
+        myprintf("Failed to open volume, code %d\n", GetLastError());
+        return false;
+    }
+
+    if (!FlushFileBuffers(handle)) {
+        myprintf("Device flush %S failed, code %d\n", tmp, GetLastError());
+        CloseHandle(handle);
+        return false;
+    }
+
+    myprintf("Device flush %S succeeded.\n", tmp);
     CloseHandle(handle);
     return true;
 }
