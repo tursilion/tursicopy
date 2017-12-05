@@ -986,7 +986,7 @@ void DeleteOrphans() {
         WIN32_FIND_DATA findDat;
 
         if (verbose) {
-            myprintf("Checking source folder...\n");
+            myprintf("Checking source folder exists...\n");
         }
     
         HANDLE hFind = FindFirstFile(formatPath(search), &findDat);
