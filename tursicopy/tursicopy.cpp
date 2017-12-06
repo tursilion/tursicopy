@@ -18,7 +18,7 @@
 #include <atlbase.h>
 #include <atlconv.h>
 
-#define MYVERSION "100"
+#define MYVERSION "101"
 
 CString src, dest, logfile;
 CString workingFolder;
@@ -29,6 +29,7 @@ ULARGE_INTEGER freeUser;
 ULARGE_INTEGER reserve;
 int saveFolders;
 int timeSlack;
+int mountDelay, unmountDelay;
 int lastBackup = -1;
 CString fmtStr = "%s~~[%d]";
 int errs = 0;
@@ -157,6 +158,8 @@ void setDefaults() {
     reserve.QuadPart = 10000000;
     saveFolders = 5;
     timeSlack = 5;
+    mountDelay = 5;
+    unmountDelay = 30;
     rotateOld = true;
     doBackup = true;
     deleteOld = true;
@@ -190,6 +193,8 @@ void PrintProfile() {
     myprintf("Reserve=%llu\n", reserve.QuadPart/1000000);
     myprintf("SaveFolders=%d\n", saveFolders);
     myprintf("TimeSlack=%d\n", timeSlack);
+    myprintf("MountDelay=%d\n", mountDelay);
+    myprintf("UnmountDelay=%d\n", unmountDelay);
     myprintf("RotateOld=%d\n", rotateOld?1:0);
     myprintf("DoBackup=%d\n", doBackup?1:0);
     myprintf("DeleteOld=%d\n", deleteOld?1:0);
@@ -391,6 +396,22 @@ bool ReadProfile(const CString &profile) {
                         timeSlack = _wtoi(val);
                         if (timeSlack == 0) {
                             myprintf("Invalid value for timeSlack [TUNING]: %s\n", string);
+                            fclose(fp);
+                            return false;
+                        }
+                        gotSomething = true;
+                    } else if (key.CompareNoCase(_T("MountDelay")) == 0) {
+                        mountDelay = _wtoi(val);
+                        if (mountDelay == 0) {
+                            myprintf("Invalid value for MountDelay [TUNING]: %s\n", string);
+                            fclose(fp);
+                            return false;
+                        }
+                        gotSomething = true;
+                    } else if (key.CompareNoCase(_T("UnmountDelay")) == 0) {
+                        unmountDelay = _wtoi(val);
+                        if (unmountDelay == 0) {
+                            myprintf("Invalid value for unmountDelay [TUNING]: %s\n", string);
                             fclose(fp);
                             return false;
                         }
@@ -656,12 +677,6 @@ void goodbye() {
     RemoveTrayIcon();
     Sleep(100);
 
-    // report
-    myprintf("\n-- DONE -- %d errs.\n", errs);
-    if (INVALID_HANDLE_VALUE != hLog) {
-        CloseHandle(hLog);
-    }
-
     // do we need to unmount? (this may cause extra errors, but we can't log them)
     if ((mountOk) && (unmountDevice)) {
         // now is it a USB unmount or a device disable?
@@ -677,16 +692,20 @@ void goodbye() {
             } else {
                 FlushDrive(baseDest);
             }
-            // the flush doesn't really help, but it's probably smart anyway
-            if (verbose) {
-                myprintf("Waiting 5 seconds for OS to finish flush...\n");
-            }
-            Sleep(5000);
+            // the flush doesn't really help, though it claims success...?
+            myprintf("Waiting %d seconds for OS to finish flush...\n", unmountDelay);
+            Sleep(unmountDelay);
             // hardware disable - this may require reboot in ?? cases?
             // I think it's pending buffer data - the FlushDrive should help,
             // the sleep definitely does. Keeping both.
             if (!EnableDisk(enableDevice, false)) ++errs;
         }
+    }
+
+    // report
+    myprintf("\n-- DONE -- %d errs.\n", errs);
+    if (INVALID_HANDLE_VALUE != hLog) {
+        CloseHandle(hLog);
     }
 
     if (((errs)&&(pauseOnErrs)) || (pauseAlways)) {
@@ -1120,10 +1139,8 @@ int main(int argc, char *argv[])
             goodbye();
         }
         // we should pause to let things sync up
-        if (verbose) {
-            myprintf("Waiting 5 seconds for OS to finish setup...\n");
-        }
-        Sleep(5000);
+        myprintf("Waiting %d seconds for OS to finish setup...\n", mountDelay);
+        Sleep(mountDelay);
     }
     mountOk = true;
 
