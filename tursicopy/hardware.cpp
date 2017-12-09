@@ -59,7 +59,7 @@ bool EnableDisk(const CString& instanceId, bool enable)
     int index = GetIndexOfInstance(diSetHandle, diData, instanceId);
     if (-1 == index) {
         myprintf("Failed to locate device with instance %S\n", instanceId);
-    SetupDiDestroyDeviceInfoList(diSetHandle);
+        SetupDiDestroyDeviceInfoList(diSetHandle);
         return false;
     }
     if (verbose) {

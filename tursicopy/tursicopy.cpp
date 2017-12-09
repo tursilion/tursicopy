@@ -18,7 +18,7 @@
 #include <atlbase.h>
 #include <atlconv.h>
 
-#define MYVERSION "101"
+#define MYVERSION "102"
 
 CString src, dest, logfile;
 CString workingFolder;
@@ -691,10 +691,13 @@ void goodbye() {
                 myprintf("DestPath is not a DOS device, can't request flush.\n");
             } else {
                 FlushDrive(baseDest);
+                myprintf("Waiting %d seconds for OS to finish flush...\n", unmountDelay);
+                Sleep(unmountDelay*1000);
+                EjectDrive(baseDest);
             }
             // the flush doesn't really help, though it claims success...?
-            myprintf("Waiting %d seconds for OS to finish flush...\n", unmountDelay);
-            Sleep(unmountDelay);
+            myprintf("Waiting %d seconds for OS to finish whatever...\n", unmountDelay);
+            Sleep(unmountDelay*1000);
             // hardware disable - this may require reboot in ?? cases?
             // I think it's pending buffer data - the FlushDrive should help,
             // the sleep definitely does. Keeping both.
