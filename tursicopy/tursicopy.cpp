@@ -1143,7 +1143,7 @@ int main(int argc, char *argv[])
         }
         // we should pause to let things sync up
         myprintf("Waiting %d seconds for OS to finish setup...\n", mountDelay);
-        Sleep(mountDelay);
+        Sleep(mountDelay*1000);
     }
     mountOk = true;
 
