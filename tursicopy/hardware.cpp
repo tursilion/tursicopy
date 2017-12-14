@@ -446,3 +446,41 @@ bool FlushDrive(CString pStr) {
     CloseHandle(handle);
     return true;
 }
+
+// searches disk volumes for the passed in name and returns the
+// drive letter if found
+CString FindDriveNamed(CString &volName) {
+    // get a bitmask of A-Z
+    DWORD dwDrives = GetLogicalDrives();
+
+    // skip A and B, these are hardcoded floppy drives
+    for (int i=2; i<26; ++i) {
+        if (dwDrives & (1<<i)) {
+            // this drive exists
+            wchar_t buf[1024];
+            DWORD size = 1024;
+
+            CString path;
+            path+=(char)('A'+i);
+            path+=_T(":\\");
+            // now query the volume
+            if (!GetVolumeInformation(path, buf, size, NULL, NULL, NULL, NULL, 0)) {
+                // skip errors, we just can't find this drive
+                if (verbose) {
+                    myprintf("Failed to get volume information for '%S', code %d\n", path.GetString(), GetLastError());
+                }
+            } else {
+                // does it match?
+                if (volName.CompareNoCase(buf) == 0) {
+                    // yes!
+                    return path;
+                } else if (verbose) {
+                    myprintf("'%S' did not match drive %s - '%S'\n", volName.GetString(), path.GetString(), buf);
+                }
+            }
+        }
+    }
+
+    myprintf("No drive name matched '%S', failing.\n", volName.GetString());
+    return "";
+}

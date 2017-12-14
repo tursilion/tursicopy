@@ -18,12 +18,12 @@
 #include <atlbase.h>
 #include <atlconv.h>
 
-#define MYVERSION "102"
+#define MYVERSION "103"
 
 CString src, dest, logfile;
 CString workingFolder;
 CString enableDevice, baseDest;
-CString csApp;
+CString csApp, findDrive;
 bool unmountDevice, rotateOld, doBackup, deleteOld;
 ULARGE_INTEGER freeUser;
 ULARGE_INTEGER reserve;
@@ -82,6 +82,7 @@ void DeleteOrphans();
 bool EnableDisk(const CString& instanceId, bool enable);
 bool EjectDrive(CString pStr);
 bool FlushDrive(CString pStr);
+CString FindDriveNamed(CString &volName);
 
 /////////////////////////////////////////////////////////////////////////
 
@@ -147,6 +148,9 @@ void print_usage() {
 
 // set default values
 void setDefaults() {
+    // in case of empty CDROMs, etc, do NOT display a popup box
+    SetErrorMode(SEM_FAILCRITICALERRORS);
+
     // set the default values for everything
     dest = "";
     baseDest = "";
@@ -154,6 +158,7 @@ void setDefaults() {
     srcList.clear();
     src = "";
     enableDevice = "";
+    findDrive = "";
     unmountDevice = false;
     reserve.QuadPart = 10000000;
     saveFolders = 5;
@@ -185,6 +190,7 @@ void PrintProfile() {
     myprintf("\n[Paranoid]\n");
     myprintf("EnableDevice=%S\n", enableDevice.GetString());
     myprintf("UnmountDevice=%d\n", unmountDevice?1:0);
+    myprintf("FindDrive=%S\n", findDrive.GetString());
     myprintf("PauseOnErrors=%d\n", pauseOnErrs?1:0);
     myprintf("PauseAlways=%d\n", pauseAlways?1:0);
     myprintf("Verbose=%d\n", verbose?1:0);
@@ -334,6 +340,9 @@ bool ReadProfile(const CString &profile) {
                             fclose(fp);
                             return false;
                         }
+                    } else if (key.CompareNoCase(_T("FindDrive")) == 0) {
+                        findDrive = val;
+                        gotSomething = true;
                     } else if (key.CompareNoCase(_T("PauseOnErrors")) == 0) {
                         if (val.Compare(_T("0")) == 0) {
                             pauseOnErrs = false;
@@ -507,7 +516,7 @@ bool LoadConfig(int argc, char *argv[]) {
     csApp = argv[0];
 
     // report information
-    myprintf("Tursicopy " MYVERSION ". Command line:\n");
+    myprintf("Tursicopy " MYVERSION ". Command line: ");
     for (int idx=0; idx<argc; ++idx) {
         myprintf("'%s' ", argv[idx]);
     }
@@ -570,6 +579,32 @@ bool LoadConfig(int argc, char *argv[]) {
             return false;
 	    }
 
+        if (findDrive.GetLength() > 0) {
+            if (bAutoMode) {
+                myprintf("Error: Auto mode overrides findDrive, not searching.\n");
+                ++errs;
+                // but not a failure!
+            } else {
+                // CString is overkill, but then I needn't worry about wide chars or not
+                CString newLetter = FindDriveNamed(findDrive);
+                if (newLetter.GetLength() > 0) {
+                    myprintf("Detected volume '%S' as drive letter '%c'\n", findDrive.GetString(), newLetter[0]);
+                    // if there's a matching logfile, then update that too
+                    if ((logfile.GetLength() > 0) && (logfile[0] == baseDest[0])) {
+                        myprintf("Also updating log path...\n");
+                        logfile.SetAt(0, newLetter[0]);
+                    }
+                    // update the dest path with the letter of the detected device
+                    baseDest.SetAt(0, newLetter[0]);
+                } else {
+                    myprintf("Failed to locate drive named '%S', aborting.\n", findDrive.GetString());
+                    ++errs;
+                    return false;
+                }
+            }
+        }
+
+        // automode overrides "findDrive"
         if (bAutoMode) {
             // update the dest path with the letter of the USB device
             baseDest.SetAt(0, profile[0]);
@@ -577,13 +612,12 @@ bool LoadConfig(int argc, char *argv[]) {
             if (logfile.GetLength() > 0) {
                 logfile.SetAt(0, profile[0]);
             }
-        }
 
-        if (bAutoMode) {
             // overwrite the enableDevice with the detected drive
             // the location is the drive containing the profile file
             enableDevice = profile.Left(2) + " (detected)";
         }
+
         if (enableDevice.GetLength() == 0) {
             // to avoid confusion later, don't unmount if we aren't mounting
             unmountDevice = false;
