@@ -18,7 +18,7 @@
 #include <atlbase.h>
 #include <atlconv.h>
 
-#define MYVERSION "103"
+#define MYVERSION "104"
 
 CString src, dest, logfile;
 CString workingFolder;
@@ -579,31 +579,6 @@ bool LoadConfig(int argc, char *argv[]) {
             return false;
 	    }
 
-        if (findDrive.GetLength() > 0) {
-            if (bAutoMode) {
-                myprintf("Error: Auto mode overrides findDrive, not searching.\n");
-                ++errs;
-                // but not a failure!
-            } else {
-                // CString is overkill, but then I needn't worry about wide chars or not
-                CString newLetter = FindDriveNamed(findDrive);
-                if (newLetter.GetLength() > 0) {
-                    myprintf("Detected volume '%S' as drive letter '%c'\n", findDrive.GetString(), newLetter[0]);
-                    // if there's a matching logfile, then update that too
-                    if ((logfile.GetLength() > 0) && (logfile[0] == baseDest[0])) {
-                        myprintf("Also updating log path...\n");
-                        logfile.SetAt(0, newLetter[0]);
-                    }
-                    // update the dest path with the letter of the detected device
-                    baseDest.SetAt(0, newLetter[0]);
-                } else {
-                    myprintf("Failed to locate drive named '%S', aborting.\n", findDrive.GetString());
-                    ++errs;
-                    return false;
-                }
-            }
-        }
-
         // automode overrides "findDrive"
         if (bAutoMode) {
             // update the dest path with the letter of the USB device
@@ -949,9 +924,9 @@ void RecursivePath(CString &path, CString subPath, HANDLE hFind, WIN32_FIND_DATA
             if ((findDat.cFileName[0] == '.')&&(findDat.cFileName[1]=='\0')) continue;
             if ((findDat.cFileName[0] == '.')&&(findDat.cFileName[1]=='.')&&(findDat.cFileName[2]=='\0')) continue;
             // skip system volume information
-            if (0 == wcscmp(findDat.cFileName, _T("System Volume Information"))) continue;
+            if (0 == _wcsicmp(findDat.cFileName, _T("System Volume Information"))) continue;
             // skip recycle bins
-            if (0 == wcscmp(findDat.cFileName, _T("$RECYCLE.BIN"))) continue;
+            if (0 == _wcsicmp(findDat.cFileName, _T("$RECYCLE.BIN"))) continue;
             // skip backup folders
             wchar_t* p=wcschr(findDat.cFileName, _T('~'));
             if (p != NULL) {
@@ -1180,6 +1155,32 @@ int main(int argc, char *argv[])
         Sleep(mountDelay*1000);
     }
     mountOk = true;
+
+    // now that we're mounted, find the correct drive (if set)
+    if (findDrive.GetLength() > 0) {
+        if (bAutoMode) {
+            myprintf("Error: Auto mode overrides findDrive, not searching.\n");
+            ++errs;
+            // but not a failure!
+        } else {
+            // CString is overkill, but then I needn't worry about wide chars or not
+            CString newLetter = FindDriveNamed(findDrive);
+            if (newLetter.GetLength() > 0) {
+                myprintf("Detected volume '%S' as drive letter '%c'\n", findDrive.GetString(), newLetter[0]);
+                // if there's a matching logfile, then update that too
+                if ((logfile.GetLength() > 0) && (logfile[0] == baseDest[0])) {
+                    myprintf("Also updating log path...\n");
+                    logfile.SetAt(0, newLetter[0]);
+                }
+                // update the dest path with the letter of the detected device
+                baseDest.SetAt(0, newLetter[0]);
+            } else {
+                myprintf("Failed to locate drive named '%S', aborting.\n", findDrive.GetString());
+                ++errs;
+                goodbye();
+            }
+        }
+    }
 
     // Get started
     myprintf("Preparing backup folder %s\n", W2A(baseDest.GetString()));
