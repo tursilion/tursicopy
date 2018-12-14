@@ -18,7 +18,11 @@
 #include <atlbase.h>
 #include <atlconv.h>
 
-#define MYVERSION "104"
+#define MYVERSION "105"
+
+// deliberate error to remind me to use my own wrapper
+#undef PathFileExists
+#define PathFileExists(x) Dont Use Path_File_Exists, use CheckExists instead.
 
 CString src, dest, logfile;
 CString workingFolder;
@@ -740,7 +744,7 @@ void RotateOldBackups(CString dest) {
     for (;;) {
         CString fn;
         fn.Format(fmtStr,dest,cnt);
-        if (!PathFileExists(fn)) {
+        if (!CheckExists(fn)) {
             break;
         }
         lastBackup = cnt;
@@ -786,7 +790,7 @@ void MoveOneFile(CString &path, WIN32_FIND_DATA &findDat) {
     CString backupFile; backupFile.Format(fmtStr, baseDest, 0); backupFile+='\\'; backupFile+=workingFolder; backupFile += path; backupFile+=fn;
     USES_CONVERSION;
 
-    if (PathFileExists(destFile)) {
+    if (CheckExists(destFile)) {
         // get the file information and see if it's stale
         HANDLE hFile = CreateFile(formatPath(destFile), GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, NULL);
         if (INVALID_HANDLE_VALUE == hFile) {
@@ -826,7 +830,7 @@ void MoveOneFile(CString &path, WIN32_FIND_DATA &findDat) {
         }
 
         myprintf("BACK: %s -> %s\n", W2A(destFile.GetString()), W2A(backupFile.GetString()));
-        if (!MoveToFolder(destFile, backupFile)) {
+        if (!MoveToFolder(destFile, backupFile)) {  // this calls FormatPath
             myprintf("** Failed to move file -- not copied! Code %d\n", GetLastError());
             ++errs;
             return;
