@@ -18,7 +18,7 @@
 #include <atlbase.h>
 #include <atlconv.h>
 
-#define MYVERSION "105"
+#define MYVERSION "106"
 
 // deliberate error to remind me to use my own wrapper
 #undef PathFileExists
@@ -868,6 +868,7 @@ void MoveOneFile(CString &path, WIN32_FIND_DATA &findDat) {
         op.lpszProgressTitle = _T("");
         int ret = SHFileOperation(&op);
         if (ret) {
+            // special here means to read the MSDN documentation, some errors are not the same as winerror.h
             myprintf("\n* Deletion error (special) code %d\n", ret);
             if (oldFolder.GetLength() >= MAX_PATH) {
                 myprintf("(The filepath may be too long - you can try deleting the folder by hand and then restarting.\n");
@@ -875,6 +876,9 @@ void MoveOneFile(CString &path, WIN32_FIND_DATA &findDat) {
             ++errs;
             goodbye();
         }
+        // give Windows some time to at least start cleaning up the disk for real, seems like it can be deferred
+        // Also, deleting too quickly might be tripping up the anti-virus... after 12 in a row the app got a refusal...
+        Sleep(1000);
 
         // a little loop to watch for the free disk to stop changing - can take a little time
         ULARGE_INTEGER old;
