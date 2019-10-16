@@ -18,7 +18,7 @@
 #include <atlbase.h>
 #include <atlconv.h>
 
-#define MYVERSION "106"
+#define MYVERSION "107"
 
 // deliberate error to remind me to use my own wrapper
 #undef PathFileExists
