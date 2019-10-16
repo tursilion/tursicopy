@@ -778,6 +778,69 @@ void RotateOldBackups(CString dest) {
 }
 
 /////////////////////////////////////////////////////////////////////////
+// Free up space if needed
+void CheckFreeSpace(WIN32_FIND_DATA &findDat) {
+    // now check if we have enough disk space
+    ULARGE_INTEGER filesize;
+    filesize.HighPart = findDat.nFileSizeHigh;
+    filesize.LowPart = findDat.nFileSizeLow;
+    // keep configurable slack
+    while (filesize.QuadPart+reserve.QuadPart >= freeUser.QuadPart) {
+        ULARGE_INTEGER totalBytes, freeBytes;
+
+        myprintf("* Freeing disk space, deleting backup folder %d... ", lastBackup);
+
+        // remove the oldest folder, but keep a minimum count
+        if (lastBackup <= saveFolders) {
+            myprintf("\n** Not enough backup folders left to free space - aborting.\n");
+            ++errs;
+            goodbye();
+        }
+
+        CString oldFolder;
+        oldFolder.Format(fmtStr, baseDest, lastBackup);
+        oldFolder+='\0';
+        SHFILEOPSTRUCT op;
+        op.hwnd = NULL;
+        op.wFunc = FO_DELETE;
+        op.pFrom = oldFolder.GetString();   // does not support \\?\ for long filenames
+        op.pTo = NULL;
+        op.fFlags = FOF_NOCONFIRMATION|FOF_NOERRORUI|FOF_NO_UI|FOF_SILENT;
+        op.fAnyOperationsAborted = FALSE;
+        op.hNameMappings = 0;
+        op.lpszProgressTitle = _T("");
+        int ret = SHFileOperation(&op);
+        if (ret) {
+            // special here means to read the MSDN documentation, some errors are not the same as winerror.h
+            myprintf("\n* Deletion error (special) code %d\n", ret);
+            if (oldFolder.GetLength() >= MAX_PATH) {
+                myprintf("(The filepath may be too long - you can try deleting the folder by hand and then restarting.\n");
+            }
+            ++errs;
+            goodbye();
+        }
+        // give Windows some time to at least start cleaning up the disk for real, seems like it can be deferred
+        // Also, deleting too quickly might be tripping up the anti-virus... after 12 in a row the app got a refusal...
+        Sleep(1000);
+
+        // a little loop to watch for the free disk to stop changing - can take a little time
+        ULARGE_INTEGER old;
+        do {
+            old.QuadPart = freeUser.QuadPart;
+            Sleep(100);
+            // update the free disk space
+            if (!GetDiskFreeSpaceEx(dest, &freeUser, &totalBytes, &freeBytes)) {
+                myprintf("\nFailed. Error %d\n", GetLastError());
+                ++errs;
+                goodbye();
+            }
+        } while (old.QuadPart != freeUser.QuadPart);
+        --lastBackup;
+        myprintf("Free space now %llu\n", freeUser.QuadPart);
+    }
+}
+
+/////////////////////////////////////////////////////////////////////////
 // Deal with backing up files
 
 void MoveOneFile(CString &path, WIN32_FIND_DATA &findDat) {
@@ -837,64 +900,8 @@ void MoveOneFile(CString &path, WIN32_FIND_DATA &findDat) {
         }
     }
 
-    // now check if we have enough disk space
-    ULARGE_INTEGER filesize;
-    filesize.HighPart = findDat.nFileSizeHigh;
-    filesize.LowPart = findDat.nFileSizeLow;
-    // keep configurable slack
-    while (filesize.QuadPart+reserve.QuadPart >= freeUser.QuadPart) {
-        ULARGE_INTEGER totalBytes, freeBytes;
-
-        myprintf("* Freeing disk space, deleting backup folder %d... ", lastBackup);
-
-        // remove the oldest folder, but keep a minimum count
-        if (lastBackup <= saveFolders) {
-            myprintf("\n** Not enough backup folders left to free space - aborting.\n");
-            ++errs;
-            goodbye();
-        }
-
-        CString oldFolder;
-        oldFolder.Format(fmtStr, baseDest, lastBackup);
-        oldFolder+='\0';
-        SHFILEOPSTRUCT op;
-        op.hwnd = NULL;
-        op.wFunc = FO_DELETE;
-        op.pFrom = oldFolder.GetString();   // does not support \\?\ for long filenames
-        op.pTo = NULL;
-        op.fFlags = FOF_NOCONFIRMATION|FOF_NOERRORUI|FOF_NO_UI|FOF_SILENT;
-        op.fAnyOperationsAborted = FALSE;
-        op.hNameMappings = 0;
-        op.lpszProgressTitle = _T("");
-        int ret = SHFileOperation(&op);
-        if (ret) {
-            // special here means to read the MSDN documentation, some errors are not the same as winerror.h
-            myprintf("\n* Deletion error (special) code %d\n", ret);
-            if (oldFolder.GetLength() >= MAX_PATH) {
-                myprintf("(The filepath may be too long - you can try deleting the folder by hand and then restarting.\n");
-            }
-            ++errs;
-            goodbye();
-        }
-        // give Windows some time to at least start cleaning up the disk for real, seems like it can be deferred
-        // Also, deleting too quickly might be tripping up the anti-virus... after 12 in a row the app got a refusal...
-        Sleep(1000);
-
-        // a little loop to watch for the free disk to stop changing - can take a little time
-        ULARGE_INTEGER old;
-        do {
-            old.QuadPart = freeUser.QuadPart;
-            Sleep(100);
-            // update the free disk space
-            if (!GetDiskFreeSpaceEx(dest, &freeUser, &totalBytes, &freeBytes)) {
-                myprintf("\nFailed. Error %d\n", GetLastError());
-                ++errs;
-                goodbye();
-            }
-        } while (old.QuadPart != freeUser.QuadPart);
-        --lastBackup;
-        myprintf("Free space now %llu\n", freeUser.QuadPart);
-    }
+    // make sure there's enough space
+    CheckFreeSpace(findDat);
 
     // finally do the copy
     myprintf("COPY: %s -> %s\n", W2A(srcFile.GetString()), W2A(destFile.GetString()));
@@ -911,10 +918,22 @@ void MoveOneFile(CString &path, WIN32_FIND_DATA &findDat) {
 #else
     if (!CopyFile(formatPath(srcFile), formatPath(destFile), TRUE)) {
 #endif
-        myprintf("** Failed to copy file -- Code %d\n", GetLastError());
-        ++errs;
-        return;
+        if (GetLastError() == 112) {
+            // ERROR_DISK_FULL - this can happen because our size tracking
+            // doesn't account for cluster sizes and the like, especially with
+            // lots of tiny files, so just zero free space and retry (ONCE)
+            freeUser.QuadPart = 0;
+            CheckFreeSpace(findDat);
+            if (!CopyFile(formatPath(srcFile), formatPath(destFile), TRUE)) {
+                myprintf("** Failed to copy file -- Code %d\n", GetLastError());
+                ++errs;
+                return;
+            }
+        }
     }
+    ULARGE_INTEGER filesize;
+    filesize.HighPart = findDat.nFileSizeHigh;
+    filesize.LowPart = findDat.nFileSizeLow;
     freeUser.QuadPart -= filesize.QuadPart;
 }
 
