@@ -18,7 +18,7 @@
 #include <atlbase.h>
 #include <atlconv.h>
 
-#define MYVERSION "107"
+#define MYVERSION "108"
 
 // deliberate error to remind me to use my own wrapper
 #undef PathFileExists
@@ -784,6 +784,11 @@ void CheckFreeSpace(WIN32_FIND_DATA &findDat) {
     ULARGE_INTEGER filesize;
     filesize.HighPart = findDat.nFileSizeHigh;
     filesize.LowPart = findDat.nFileSizeLow;
+    // debug if we need to do this
+    if (filesize.QuadPart+reserve.QuadPart >= freeUser.QuadPart) {
+        myprintf("* Need %llu bytes, disk has only %llu bytes.", filesize.QuadPart+reserve.QuadPart, freeUser.QuadPart);
+    }
+
     // keep configurable slack
     while (filesize.QuadPart+reserve.QuadPart >= freeUser.QuadPart) {
         ULARGE_INTEGER totalBytes, freeBytes;
@@ -827,7 +832,7 @@ void CheckFreeSpace(WIN32_FIND_DATA &findDat) {
         ULARGE_INTEGER old;
         do {
             old.QuadPart = freeUser.QuadPart;
-            Sleep(100);
+            Sleep(1000);
             // update the free disk space
             if (!GetDiskFreeSpaceEx(dest, &freeUser, &totalBytes, &freeBytes)) {
                 myprintf("\nFailed. Error %d\n", GetLastError());
@@ -908,6 +913,7 @@ void MoveOneFile(CString &path, WIN32_FIND_DATA &findDat) {
     BOOL cancel = FALSE;
 #if 0
     // CopyFile2 can preserve attributes (like symlinks)! But requires Windows 8.
+    // TODO: if you enable this, check the second try below
     COPYFILE2_EXTENDED_PARAMETERS param;
     param.dwSize=sizeof(param);
     param.dwCopyFlags = COPY_FILE_COPY_SYMLINK | COPY_FILE_FAIL_IF_EXISTS;
@@ -922,6 +928,7 @@ void MoveOneFile(CString &path, WIN32_FIND_DATA &findDat) {
             // ERROR_DISK_FULL - this can happen because our size tracking
             // doesn't account for cluster sizes and the like, especially with
             // lots of tiny files, so just zero free space and retry (ONCE)
+            myprintf("** Failed to copy file -- Code %d - will retry\n", GetLastError());
             freeUser.QuadPart = 0;
             CheckFreeSpace(findDat);
             if (!CopyFile(formatPath(srcFile), formatPath(destFile), TRUE)) {
