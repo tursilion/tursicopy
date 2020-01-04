@@ -42,6 +42,7 @@ bool pauseOnErrs = true;
 bool pauseAlways = false;
 bool mountOk = false;
 bool verbose = false;
+bool isCompressedDrive = false;
 HANDLE hLog = INVALID_HANDLE_VALUE;
 
 // window thread
@@ -172,6 +173,7 @@ void setDefaults() {
     rotateOld = true;
     doBackup = true;
     deleteOld = true;
+    isCompressedDrive = false;
     errs = 0;
     icon.cbSize = 0;
 }
@@ -208,6 +210,7 @@ void PrintProfile() {
     myprintf("RotateOld=%d\n", rotateOld?1:0);
     myprintf("DoBackup=%d\n", doBackup?1:0);
     myprintf("DeleteOld=%d\n", deleteOld?1:0);
+    myprintf("isCompressedDrive=%d\n", isCompressedDrive?1:0);
     
     myprintf("\n");
 }
@@ -465,8 +468,20 @@ bool ReadProfile(const CString &profile) {
                             fclose(fp);
                             return false;
                         }
+                    } else if (key.CompareNoCase(_T("isCompressedDrive")) == 0) {
+                        if (val.Compare(_T("0")) == 0) {
+                            isCompressedDrive = false;
+                            gotSomething = true;
+                        } else if (val.Compare(_T("1")) == 0) {
+                            isCompressedDrive = true;
+                            gotSomething = true;
+                        } else {
+                            myprintf("Couldn't parse value for isCompressedDrive (0/1) [TUNING]: %s\n", string);
+                            fclose(fp);
+                            return false;
+                        }
                     } else {
-                        myprintf("Unknown key in [PARANOID]: %s\n", string);
+                        myprintf("Unknown key in [TUNING]: %s\n", string);
                     }
                     break;
             }
@@ -784,9 +799,13 @@ void CheckFreeSpace(WIN32_FIND_DATA &findDat) {
     ULARGE_INTEGER filesize;
     filesize.HighPart = findDat.nFileSizeHigh;
     filesize.LowPart = findDat.nFileSizeLow;
+    // if the user configured for a compressed drive, we need to double the space needed
+    if (isCompressedDrive) {
+        filesize.QuadPart *= 2;
+    }
     // debug if we need to do this
     if (filesize.QuadPart+reserve.QuadPart >= freeUser.QuadPart) {
-        myprintf("* Need %llu bytes, disk has only %llu bytes.", filesize.QuadPart+reserve.QuadPart, freeUser.QuadPart);
+        myprintf("* Need %llu bytes, disk has only %llu bytes.\n", filesize.QuadPart+reserve.QuadPart, freeUser.QuadPart);
     }
 
     // keep configurable slack
