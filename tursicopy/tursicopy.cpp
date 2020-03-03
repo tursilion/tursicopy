@@ -18,7 +18,7 @@
 #include <atlbase.h>
 #include <atlconv.h>
 
-#define MYVERSION "108"
+#define MYVERSION "109"
 
 // deliberate error to remind me to use my own wrapper
 #undef PathFileExists
@@ -701,6 +701,10 @@ bool MoveToFolder(CString src, CString &dest) {
 
 // always called at exit in order to check error count
 void goodbye() {
+    // restore normal processing for cleanup
+    SetPriorityClass(GetCurrentProcess(), PROCESS_MODE_BACKGROUND_END);
+
+    // shut down the monitor thread, if active
     quitflag = true;
     RemoveTrayIcon();
     Sleep(100);
@@ -1298,6 +1302,9 @@ int main(int argc, char *argv[])
         myprintf("No actual actions were set to be done!\n");
         ++errs;
     }
+
+    // Now that the prep is ready, reduce our priority so we don't kill the system if the user is up
+    SetPriorityClass(GetCurrentProcess(), PROCESS_MODE_BACKGROUND_BEGIN);
 
     if (rotateOld) {
         // rotate old backup folders just once per run
