@@ -18,7 +18,7 @@
 #include <atlbase.h>
 #include <atlconv.h>
 
-#define MYVERSION "109"
+#define MYVERSION "110"
 
 // deliberate error to remind me to use my own wrapper
 #undef PathFileExists
@@ -790,7 +790,7 @@ void RotateOldBackups(CString dest) {
     CString newFolder; 
     newFolder.Format(fmtStr, dest, 0);
     if (!CreateDirectory(formatPath(newFolder), NULL)) {
-        myprintf("Failed to create folder 0, code %d\n", GetLastError());
+        myprintf("Failed to create folder 0, code %d\nFailed path: %S\n", GetLastError(), formatPath(newFolder).GetString());
         ++errs;
         goodbye();
     }
@@ -858,7 +858,7 @@ void CheckFreeSpace(WIN32_FIND_DATA &findDat) {
             Sleep(1000);
             // update the free disk space
             if (!GetDiskFreeSpaceEx(dest, &freeUser, &totalBytes, &freeBytes)) {
-                myprintf("\nFailed. Error %d\n", GetLastError());
+                myprintf("\nFailed to watch free disk space after delete. Error %d\n", GetLastError());
                 ++errs;
                 goodbye();
             }
@@ -885,13 +885,13 @@ void MoveOneFile(CString &path, WIN32_FIND_DATA &findDat) {
         // get the file information and see if it's stale
         HANDLE hFile = CreateFile(formatPath(destFile), GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, NULL);
         if (INVALID_HANDLE_VALUE == hFile) {
-            myprintf("Failed to open old dest file, though it exists. Code %d\n", GetLastError());
+            myprintf("Failed to open old dest file, though it exists. Code %d\nFailed file: %S\n", GetLastError(), formatPath(destFile).GetString());
             ++errs;
             return;
         }
         BY_HANDLE_FILE_INFORMATION info;
         if (!GetFileInformationByHandle(hFile, &info)) {
-            myprintf("Failed to get old dest file information, skipping. Code %d\n", GetLastError());
+            myprintf("Failed to get old dest file information, skipping. Code %d\nFailed file: %S\n", GetLastError(), formatPath(destFile).GetString());
             ++errs;
             return;
         }
@@ -915,12 +915,12 @@ void MoveOneFile(CString &path, WIN32_FIND_DATA &findDat) {
             (info.nFileSizeHigh == findDat.nFileSizeHigh) && 
             (info.nFileSizeLow == findDat.nFileSizeLow)) {
             if (verbose) {
-                myprintf("SAME: %s\n", W2A(destFile.GetString()));
+                myprintf("SAME: %S\n", destFile.GetString());
             }
             return;
         }
 
-        myprintf("BACK: %s -> %s\n", W2A(destFile.GetString()), W2A(backupFile.GetString()));
+        myprintf("BACK: %S -> %S\n", destFile.GetString(), backupFile.GetString());
         if (!MoveToFolder(destFile, backupFile)) {  // this calls FormatPath
             myprintf("** Failed to move file -- not copied! Code %d\n", GetLastError());
             ++errs;
@@ -932,7 +932,7 @@ void MoveOneFile(CString &path, WIN32_FIND_DATA &findDat) {
     CheckFreeSpace(findDat);
 
     // finally do the copy
-    myprintf("COPY: %s -> %s\n", W2A(srcFile.GetString()), W2A(destFile.GetString()));
+    myprintf("COPY: %S -> %S\n", srcFile.GetString(), destFile.GetString());
     BOOL cancel = FALSE;
 #if 0
     // CopyFile2 can preserve attributes (like symlinks)! But requires Windows 8.
@@ -1108,7 +1108,7 @@ void ConfirmOneFile(CString &path, WIN32_FIND_DATA &findDat) {
     CString backupFile; backupFile.Format(fmtStr, baseDest, 0); backupFile+='\\'; backupFile+=workingFolder; backupFile += path; backupFile+=fn;
 
     if (!CheckExists(srcFile)) {
-        myprintf("NUKE: %s -> %s\n", W2A(destFile.GetString()), W2A(backupFile.GetString()));
+        myprintf("NUKE: %S -> %S\n", destFile.GetString(), backupFile.GetString());
         if (!MoveToFolder(destFile, backupFile)) {
             myprintf("** Failed to move file -- not copied! Code %d\n", GetLastError());
             ++errs;
@@ -1240,7 +1240,7 @@ int main(int argc, char *argv[])
     }
 
     // Get started
-    myprintf("Preparing backup folder %s\n", W2A(baseDest.GetString()));
+    myprintf("Preparing backup folder %S\n", baseDest.GetString());
     
     // make sure the destination folder exists - need this before we check disk space
     // if we just enabled, we may need a few seconds before this works, so we'll loop
@@ -1324,7 +1324,7 @@ int main(int argc, char *argv[])
             workingFolder = srcList[idx].destFolder;
             if (workingFolder.Right(1) != '\\') workingFolder+='\\';
 
-            myprintf("Going to work from %s to %s\n", W2A(src.GetString()), W2A(dest.GetString()));
+            myprintf("Going to work from %S to %S\n", src.GetString(), dest.GetString());
 
             // make sure this destination folder exists
             if (!MoveToFolder(_T(""), dest)) {
