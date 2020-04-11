@@ -18,7 +18,7 @@
 #include <atlbase.h>
 #include <atlconv.h>
 
-#define MYVERSION "110"
+#define MYVERSION "110a"
 
 // deliberate error to remind me to use my own wrapper
 #undef PathFileExists
@@ -954,6 +954,7 @@ void MoveOneFile(CString &path, WIN32_FIND_DATA &findDat) {
             // doesn't account for cluster sizes and the like, especially with
             // lots of tiny files, so just zero free space and retry (ONCE)
             myprintf("** Failed to copy file -- Code %d - will retry\n", GetLastError());
+            myprintf("** Free space was estimated %I64d bytes, zeroing to force freeing\n", freeUser.QuadPart);
             freeUser.QuadPart = 0;
             CheckFreeSpace(findDat);
             if (!CopyFile(formatPath(srcFile), formatPath(destFile), TRUE)) {
@@ -973,6 +974,8 @@ void MoveOneFile(CString &path, WIN32_FIND_DATA &findDat) {
 void ConfirmOneFile(CString& path, WIN32_FIND_DATA &findDat);
 void ConfirmOneFolder(CString& path, WIN32_FIND_DATA &findDat);
 void RecursivePath(CString &path, CString subPath, HANDLE hFind, WIN32_FIND_DATA& findDat, bool backingup) {
+    USES_CONVERSION;
+
     // run the current path into the ground ;)
     if (path.Right(1) != "\\") path+='\\';
     if ((subPath.GetLength() > 0) && (subPath.Right(1) != "\\")) subPath+='\\';
@@ -1008,7 +1011,7 @@ void RecursivePath(CString &path, CString subPath, HANDLE hFind, WIN32_FIND_DATA
                 if (!CreateDirectory(formatPath(newFolder), NULL)) {
                     DWORD err = GetLastError();
                     if (err != ERROR_ALREADY_EXISTS) {
-                        myprintf("Failed trying to create folder %S, code %d\n", newFolder.GetString(), GetLastError());
+                        myprintf("Failed trying to create folder %s, code %d\n", W2A(newFolder.GetString()), GetLastError());
                         ++errs;
                     }
                 }
@@ -1021,6 +1024,7 @@ void RecursivePath(CString &path, CString subPath, HANDLE hFind, WIN32_FIND_DATA
             HANDLE hFind2 = FindFirstFile(formatPath(srchPath), &newFind);
             if (INVALID_HANDLE_VALUE == hFind2) {
                 myprintf("Failed to start subdir search. Code %d\n", GetLastError());
+                myprintf("Failed path: %s\n", W2A(srchPath.GetString()));
                 ++errs;
                 continue;
             }
