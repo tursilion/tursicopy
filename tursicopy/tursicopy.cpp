@@ -18,7 +18,7 @@
 #include <atlbase.h>
 #include <atlconv.h>
 
-#define MYVERSION "110a"
+#define MYVERSION "111"
 
 // deliberate error to remind me to use my own wrapper
 #undef PathFileExists
@@ -989,6 +989,8 @@ void RecursivePath(CString &path, CString subPath, HANDLE hFind, WIN32_FIND_DATA
             if (0 == _wcsicmp(findDat.cFileName, _T("System Volume Information"))) continue;
             // skip recycle bins
             if (0 == _wcsicmp(findDat.cFileName, _T("$RECYCLE.BIN"))) continue;
+            // skip pagefile
+            if (0 == _wcsicmp(findDat.cFileName, _T("pagefile.sys"))) continue;
             // skip backup folders
             wchar_t* p=wcschr(findDat.cFileName, _T('~'));
             if (p != NULL) {
