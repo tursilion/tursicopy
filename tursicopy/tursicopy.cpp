@@ -18,7 +18,7 @@
 #include <atlbase.h>
 #include <atlconv.h>
 
-#define MYVERSION "111"
+#define MYVERSION "112"
 
 // deliberate error to remind me to use my own wrapper
 #undef PathFileExists
@@ -59,6 +59,7 @@ struct _srcs {
     }
 };
 std::vector<_srcs> srcList;
+std::vector<CString> skipList;  // let's mix apis, what the hell! Take that, porters! ;)
 
 bool CreateMessageWindow();
 void WindowLoop();
@@ -193,6 +194,11 @@ void PrintProfile() {
         myprintf("%S=%S\n", srcList[idx].destFolder.GetString(), srcList[idx].srcPath.GetString());
     }
 
+    myprintf("\n[Filter]\n");
+    for (unsigned int idx = 0; idx < skipList.size(); ++idx) {
+        myprintf("skip=%S\n", skipList[idx].GetString());
+    }
+
     myprintf("\n[Paranoid]\n");
     myprintf("EnableDevice=%S\n", enableDevice.GetString());
     myprintf("UnmountDevice=%d\n", unmountDevice?1:0);
@@ -231,7 +237,7 @@ bool ReadProfile(const CString &profile) {
     char string[1024];
     char sectionstr[128]="NONE";
     enum {
-        NONE, SETUP, SOURCE, PARANOID, TUNING
+        NONE, SETUP, SOURCE, FILTER, PARANOID, TUNING
     };  // sections for easy switching
     int section = NONE;
     bool gotSomething = false;
@@ -279,6 +285,8 @@ bool ReadProfile(const CString &profile) {
                 section = SETUP;
             } else if (0 == _strnicmp(&string[p], "source", 6)) {
                 section = SOURCE;
+            } else if (0 == _strnicmp(&string[p], "filter", 6)) {
+                section = FILTER;
             } else if (0 == _strnicmp(&string[p], "paranoid", 8)) {
                 section = PARANOID;
             } else if (0 == _strnicmp(&string[p], "tuning", 6)) {
@@ -329,6 +337,15 @@ bool ReadProfile(const CString &profile) {
                     // everything in this section is a path
                     srcList.emplace_back(val, key);
                     gotSomething = true;
+                    break;
+
+                case FILTER:
+                    // only keyword we allow right now is skip, which is allowed to be repeated
+                    if (key.CompareNoCase(_T("skip")) == 0) {
+                        skipList.push_back(val);
+                    } else {
+                        myprintf("Unknown key in [FILTER]: %s\n", string);
+                    }
                     break;
 
                 case PARANOID:
@@ -871,6 +888,20 @@ void CheckFreeSpace(WIN32_FIND_DATA &findDat) {
 /////////////////////////////////////////////////////////////////////////
 // Deal with backing up files
 
+bool isSkippable(CString testPath) {
+    // check if this path is on the skipList
+    for (CString &s : skipList) {
+        if (testPath.Find(s) != -1) {
+            if (verbose) {
+                myprintf("- Skipping path %S\n", testPath.GetString());
+            }
+            return true;
+        }
+    }
+
+    return false;
+}
+
 void MoveOneFile(CString &path, WIN32_FIND_DATA &findDat) {
     // copy file from src to dest - we can use the dat to check whether to do it
     // any old file is moved to the backup folder~~[0] before being replaced
@@ -879,6 +910,11 @@ void MoveOneFile(CString &path, WIN32_FIND_DATA &findDat) {
     CString srcFile = src + path + fn;
     CString destFile = dest + path + fn;
     CString backupFile; backupFile.Format(fmtStr, baseDest, 0); backupFile+='\\'; backupFile+=workingFolder; backupFile += path; backupFile+=fn;
+
+    // check if this path is on the skipList - if so, leave it alone
+    if (isSkippable(srcFile)) {
+        return;
+    }
 
     // For W2A. W2A needed, %S doesn't handle wide filenames right
     USES_CONVERSION;
@@ -980,6 +1016,12 @@ void RecursivePath(CString &path, CString subPath, HANDLE hFind, WIN32_FIND_DATA
     if (path.Right(1) != "\\") path+='\\';
     if ((subPath.GetLength() > 0) && (subPath.Right(1) != "\\")) subPath+='\\';
 
+    // check if this path is on the skipList - if so, we don't need to descend any further
+    // this might be redundant with the check below...
+    if (isSkippable(path + subPath)) {
+        return;
+    }
+
     do {
         if (findDat.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
             // skip . and ..
@@ -1002,6 +1044,10 @@ void RecursivePath(CString &path, CString subPath, HANDLE hFind, WIN32_FIND_DATA
             if (findDat.dwFileAttributes & FILE_ATTRIBUTE_OFFLINE) continue;
             if (findDat.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) continue;
             if (findDat.dwFileAttributes & FILE_ATTRIBUTE_TEMPORARY) continue;
+
+            if (isSkippable(path + subPath + findDat.cFileName)) {
+                continue;
+            }
 
             if (verbose) {
                 myprintf("%S%S%S\n", path.GetString(), subPath.GetString(), findDat.cFileName);
@@ -1115,6 +1161,11 @@ void ConfirmOneFile(CString &path, WIN32_FIND_DATA &findDat) {
     CString destFile = dest + path + fn;
     CString backupFile; backupFile.Format(fmtStr, baseDest, 0); backupFile+='\\'; backupFile+=workingFolder; backupFile += path; backupFile+=fn;
 
+    // check if this path is on the skipList - if so, leave it alone
+    if (isSkippable(srcFile)) {
+        return;
+    }
+
     if (!CheckExists(srcFile)) {
         myprintf("NUKE: %s -> %s\n", W2A(destFile.GetString()), W2A(backupFile.GetString()));
         if (!MoveToFolder(destFile, backupFile)) {
@@ -1132,6 +1183,11 @@ void ConfirmOneFolder(CString &path, WIN32_FIND_DATA &findDat) {
     CString fn = findDat.cFileName;
     CString srcFile = src + path + fn;
     CString destFile = dest + path + fn;
+
+    // check if this path is on the skipList - if so, leave it alone
+    if (isSkippable(srcFile)) {
+        return;
+    }
 
     if (!CheckExists(srcFile)) {
         myprintf("NUKE: %S\n", destFile.GetString());
