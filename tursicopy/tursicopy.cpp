@@ -18,7 +18,7 @@
 #include <atlbase.h>
 #include <atlconv.h>
 
-#define MYVERSION "112"
+#define MYVERSION "113"
 
 // deliberate error to remind me to use my own wrapper
 #undef PathFileExists
@@ -974,6 +974,7 @@ void MoveOneFile(CString &path, WIN32_FIND_DATA &findDat) {
     BOOL cancel = FALSE;
 #if 0
     // CopyFile2 can preserve attributes (like symlinks)! But requires Windows 8.
+    // Note we filter out symlinks/reparse points before calling this
     // TODO: if you enable this, check the second try below
     COPYFILE2_EXTENDED_PARAMETERS param;
     param.dwSize=sizeof(param);
@@ -998,6 +999,10 @@ void MoveOneFile(CString &path, WIN32_FIND_DATA &findDat) {
                 ++errs;
                 return;
             }
+        } else {
+            myprintf("** Failed to copy file -- Code %d\n", GetLastError());
+            ++errs;
+            return;
         }
     }
     ULARGE_INTEGER filesize;
@@ -1086,6 +1091,11 @@ void RecursivePath(CString &path, CString subPath, HANDLE hFind, WIN32_FIND_DATA
 
             continue;
         }
+
+        // above checks were only for folders, but we also want to skip files with these attributes
+        if (findDat.dwFileAttributes & FILE_ATTRIBUTE_OFFLINE) continue;
+        if (findDat.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) continue;
+        if (findDat.dwFileAttributes & FILE_ATTRIBUTE_TEMPORARY) continue;
 
         if (backingup) {
             MoveOneFile(subPath, findDat);
@@ -1400,6 +1410,7 @@ int main(int argc, char *argv[])
 
             if (doBackup) { 
                 if (!DoNewBackup()) {
+                    ++errs;
                     if (deleteOld) {
                         myprintf("Failed to start backup, skipping purge of orphans!\n");
                         deleteOld = false;
