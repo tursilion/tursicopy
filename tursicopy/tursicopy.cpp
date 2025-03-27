@@ -18,7 +18,7 @@
 #include <atlbase.h>
 #include <atlconv.h>
 
-#define MYVERSION "114"
+#define MYVERSION "114a"
 
 // deliberate error to remind me to use my own wrapper
 #undef PathFileExists
@@ -989,7 +989,12 @@ CString caseSensitiveReformat(CString &inFile) {
     // yeah, that'll be ugly on some files, but frankly most of the files I don't really care as they are system files, not my data.
     // This won't fix cases where I do the initial copy with rsync, but we'll deal with that in the future.
     CString tmp;
-    for (int i = 0; i < inFile.GetLength(); ++i) {
+    // Do not uppercase anything but the filename, so find the final backslash. This will need to change when case-sensitive folders are added
+    int start = inFile.ReverseFind(_T('\\'));
+    if (start == -1) start = inFile.ReverseFind(_T('/'));   // really should not happen?
+    if (start == -1) start = 0;                             // REALLY? Well, whole string then...
+    if (start > 0) tmp = inFile.Left(start);
+    for (int i = start; i < inFile.GetLength(); ++i) {
         if (iswupper(inFile.GetAt(i))) {
             tmp += _T('^');
         }
@@ -1004,7 +1009,12 @@ CString caseSensitiveReformat(CString &inFile) {
 // undo the above formatting
 CString caseSensitiveUnformat(CString &inFile) {
     CString tmp;
-    for (int i = 0; i < inFile.GetLength(); ++i) {
+    // Do not uppercase anything but the filename, so find the final backslash. This will need to change when case-sensitive folders are added
+    int start = inFile.ReverseFind(_T('\\'));
+    if (start == -1) start = inFile.ReverseFind(_T('/'));   // really should not happen?
+    if (start == -1) start = 0;                             // REALLY? Well, whole string then...
+    if (start > 0) tmp = inFile.Left(start);
+    for (int i = start; i < inFile.GetLength(); ++i) {
         // this is mostly just removing the carets, unless we
         // find two of them, as the actual case still exists
         if (inFile.GetAt(i) == _T('^')) {
