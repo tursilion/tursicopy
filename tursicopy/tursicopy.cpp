@@ -18,7 +18,7 @@
 #include <atlbase.h>
 #include <atlconv.h>
 
-#define MYVERSION "113"
+#define MYVERSION "114"
 
 // deliberate error to remind me to use my own wrapper
 #undef PathFileExists
@@ -52,10 +52,12 @@ extern NOTIFYICONDATA icon;
 struct _srcs {
     CString srcPath;
     CString destFolder;
+    int caseSensitive;
 
-    _srcs(CString src, CString dest) {
+    _srcs(CString src, CString dest, int cs) {
         srcPath = src;
         destFolder = dest;
+        caseSensitive = cs;
     }
 };
 std::vector<_srcs> srcList;
@@ -78,14 +80,14 @@ bool CheckExists(const CString &in);
 bool MoveToFolder(CString src, CString &dest);
 void goodbye();
 void RotateOldBackups(CString dest);
-void MoveOneFile(CString &path, WIN32_FIND_DATA &findDat);
-void ConfirmOneFile(CString& path, WIN32_FIND_DATA &findDat);
+void MoveOneFile(CString &path, WIN32_FIND_DATA &findDat, bool isCaseSensitive);
+void ConfirmOneFile(CString& path, WIN32_FIND_DATA &findDat, bool isCaseSensitive);
 void ConfirmOneFolder(CString& path, WIN32_FIND_DATA &findDat);
-void RecursivePath(CString &path, CString subPath, HANDLE hFind, WIN32_FIND_DATA& findDat, bool backingup);
-bool DoNewBackup();
-void DeleteOrphans();
+void RecursivePath(CString &path, CString subPath, HANDLE hFind, WIN32_FIND_DATA& findDat, bool backingup, int caseSensitiveSrc);
+bool DoNewBackup(int caseSensitive);
+void DeleteOrphans(int caseSensitive);
 // hardware.ccp
-bool EnableDisk(const CString& instanceId, bool enable);
+bool EnableDisk(const CString& instanceId, bool enable, bool &wasAlready);
 bool EjectDrive(CString pStr);
 bool FlushDrive(CString pStr);
 CString FindDriveNamed(CString &volName);
@@ -166,7 +168,7 @@ void setDefaults() {
     enableDevice = "";
     findDrive = "";
     unmountDevice = false;
-    reserve.QuadPart = 10000000;
+    reserve.QuadPart = 100000000;
     saveFolders = 5;
     timeSlack = 5;
     mountDelay = 5;
@@ -191,7 +193,11 @@ void PrintProfile() {
 
     myprintf("\n[Source]\n");
     for (unsigned int idx = 0; idx < srcList.size(); ++idx) {
-        myprintf("%S=%S\n", srcList[idx].destFolder.GetString(), srcList[idx].srcPath.GetString());
+        if (srcList[idx].caseSensitive == -1) {
+            myprintf("%S=%S\n", srcList[idx].destFolder.GetString(), srcList[idx].srcPath.GetString());
+        } else {
+            myprintf("%S:%S=%S\n", srcList[idx].destFolder.GetString(), srcList[idx].caseSensitive ? "CS":"NOCS", srcList[idx].srcPath.GetString());
+        }
     }
 
     myprintf("\n[Filter]\n");
@@ -335,8 +341,28 @@ bool ReadProfile(const CString &profile) {
 
                 case SOURCE:
                     // everything in this section is a path
-                    srcList.emplace_back(val, key);
-                    gotSomething = true;
+                    // key might have a :CS or :NOCS for case sensitive
+                    {
+                        int cs = -1;    // autodetect case sensitive
+
+                        if (-1 != key.Find(':')) {
+                            int p = key.Find(':');
+                            CString arg = key.Mid(p+1);
+                            key = key.Left(p);
+
+                            if (arg.CompareNoCase(_T("CS")) == 0) {
+                                cs = 1;
+                            } else if (arg.CompareNoCase(_T("NOCS")) == 0) {
+                                cs = 0;
+                            } else {
+                                myprintf("Unknown argument in [SOURCE] for %s\n", string);
+                            }
+                        }
+                        if (!key.IsEmpty()) {
+                            srcList.emplace_back(val, key, cs);
+                            gotSomething = true;
+                        }
+                    }
                     break;
 
                 case FILTER:
@@ -583,7 +609,7 @@ bool LoadConfig(int argc, char *argv[]) {
             print_usage();
             return false;
 	    }
-        srcList.emplace_back(src, "");  // one source, from src to root folder of dest
+        srcList.emplace_back(src, "", -1);  // one source, from src to root folder of dest, detect case sensitivity
         return true;
     }
 
@@ -750,7 +776,8 @@ void goodbye() {
             // hardware disable - this may require reboot in ?? cases?
             // I think it's pending buffer data - the FlushDrive should help,
             // the sleep definitely does. Keeping both.
-            if (!EnableDisk(enableDevice, false)) ++errs;
+            bool wasAlready = false;    // not really using this on disable
+            if (!EnableDisk(enableDevice, false, wasAlready)) ++errs;
         }
     }
 
@@ -902,7 +929,98 @@ bool isSkippable(CString testPath) {
     return false;
 }
 
-void MoveOneFile(CString &path, WIN32_FIND_DATA &findDat) {
+// use the passed file information to test if the source file system is case sensitive (WSL, etc)
+// if it is, we mangle the output names to differentiate because open source developers are dorks
+// who deliberately use filenames that differ only by case. I care more about the data than the
+// filename but the errors copying are occasionally troublesome.
+// Current case sensitive FOLDERS are not handled as so far that hasn't been an issue, but I'm sure
+// I'll need to add it someday...
+bool checkCaseSensitive(CString& path, WIN32_FIND_DATA& findDat) {
+    CString fn = findDat.cFileName;
+    CString srcFile = src + path + fn;
+    CString srcPath = src + path;
+
+    if (!CheckExists(srcFile)) {
+        // well, that shouldn't happen...
+        myprintf("* WARNING testing %S - file should exist but shows it does not?\n", srcPath.GetString());
+        // assume the default
+        return false;
+    }
+    srcFile = srcFile.MakeUpper();
+    if (!CheckExists(srcFile)) {
+        // main file exists but all uppercase does not - probably case sensitive
+        myprintf("%S shows case sensitive file system - filenames will be munged.\n", srcPath.GetString());
+        return true;
+    }
+    // just in case that was already a match, or both files existed...
+    srcFile = srcFile.MakeLower();
+    if (!CheckExists(srcFile)) {
+        // main file exists and uppercase exists but all lowercase does not - probably case sensitive
+        myprintf("%S shows case sensitive file system - filenames will be munged.\n", srcPath.GetString());
+        return true;
+    }
+    // finally, try an obscure case. Odds of all three existing but it's really case sensitive are pretty low
+    {
+        CString tmp;
+        for (int i = 0; i < srcFile.GetLength(); ++i) {
+            if (i & 1) {
+                tmp += srcFile.MakeLower().GetAt(i);
+            } else {
+                tmp += srcFile.MakeUpper().GetAt(i);
+            }
+        }
+        srcFile = tmp;
+    }
+    if (!CheckExists(srcFile)) {
+        // main file exists and uppercase exists but all lowercase does not - probably case sensitive
+        myprintf("%S shows case sensitive file system - filenames will be munged.\n", srcPath.GetString());
+        return true;
+    }
+
+    // assume not
+    if (verbose) {
+        myprintf("%S shows non-case sensitive file system.\n", srcPath.GetString());
+    }
+    return false;
+}
+
+CString caseSensitiveReformat(CString &inFile) {
+    // source file system is case sensitive, so we tag uppercase letters with '^' for output to avoid conflicts
+    // yeah, that'll be ugly on some files, but frankly most of the files I don't really care as they are system files, not my data.
+    // This won't fix cases where I do the initial copy with rsync, but we'll deal with that in the future.
+    CString tmp;
+    for (int i = 0; i < inFile.GetLength(); ++i) {
+        if (iswupper(inFile.GetAt(i))) {
+            tmp += _T('^');
+        }
+        if (inFile.GetAt(i) == _T('^')) {
+            // just in case - avoid confusion
+            tmp += _T('^');
+        }
+        tmp += inFile.GetAt(i);
+    }
+    return tmp;
+}
+// undo the above formatting
+CString caseSensitiveUnformat(CString &inFile) {
+    CString tmp;
+    for (int i = 0; i < inFile.GetLength(); ++i) {
+        // this is mostly just removing the carets, unless we
+        // find two of them, as the actual case still exists
+        if (inFile.GetAt(i) == _T('^')) {
+            if (inFile.GetAt(i+1) == _T('^')) {
+                // was ^^, so export one
+                tmp += _T('^');
+                ++i;
+            }
+            continue;
+        }
+        tmp += inFile.GetAt(i);
+    }
+    return tmp;
+}
+
+void MoveOneFile(CString &path, WIN32_FIND_DATA &findDat, bool isCaseSensitive) {
     // copy file from src to dest - we can use the dat to check whether to do it
     // any old file is moved to the backup folder~~[0] before being replaced
     // free space is expected to be present
@@ -910,6 +1028,11 @@ void MoveOneFile(CString &path, WIN32_FIND_DATA &findDat) {
     CString srcFile = src + path + fn;
     CString destFile = dest + path + fn;
     CString backupFile; backupFile.Format(fmtStr, baseDest, 0); backupFile+='\\'; backupFile+=workingFolder; backupFile += path; backupFile+=fn;
+
+    if (isCaseSensitive) {
+        destFile = caseSensitiveReformat(destFile);
+        backupFile = caseSensitiveReformat(backupFile);
+    }
 
     // check if this path is on the skipList - if so, leave it alone
     if (isSkippable(srcFile)) {
@@ -1014,7 +1137,7 @@ void MoveOneFile(CString &path, WIN32_FIND_DATA &findDat) {
 // if not backing up, then we're deleting orphans
 void ConfirmOneFile(CString& path, WIN32_FIND_DATA &findDat);
 void ConfirmOneFolder(CString& path, WIN32_FIND_DATA &findDat);
-void RecursivePath(CString &path, CString subPath, HANDLE hFind, WIN32_FIND_DATA& findDat, bool backingup) {
+void RecursivePath(CString &path, CString subPath, HANDLE hFind, WIN32_FIND_DATA& findDat, bool backingup, int isCaseSensitiveSrc) {
     USES_CONVERSION;
 
     // run the current path into the ground ;)
@@ -1081,7 +1204,7 @@ void RecursivePath(CString &path, CString subPath, HANDLE hFind, WIN32_FIND_DATA
                 ++errs;
                 continue;
             }
-            RecursivePath(path, newSubPath, hFind2, newFind, backingup);
+            RecursivePath(path, newSubPath, hFind2, newFind, backingup, isCaseSensitiveSrc);
             FindClose(hFind2);
 
             // if not backing up, we might need to remove this folder
@@ -1097,15 +1220,24 @@ void RecursivePath(CString &path, CString subPath, HANDLE hFind, WIN32_FIND_DATA
         if (findDat.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) continue;
         if (findDat.dwFileAttributes & FILE_ATTRIBUTE_TEMPORARY) continue;
 
+        // isCaseSensitiveSrc: -1 = not checked, 0 = no, 1 = yes
+        // checked once per root recursion. Windows 11 allows per-folder case sensitivity, but we assume
+        // that each source is either ALL case sensitive or NOT. You can work around this by specifying
+        // such folders as separate sources.
+        if (-1 == isCaseSensitiveSrc) {
+            // we need to check whether this file is on a case sensitive file system
+            isCaseSensitiveSrc = checkCaseSensitive(subPath, findDat) ? 1 : 0;
+        }
+
         if (backingup) {
-            MoveOneFile(subPath, findDat);
+            MoveOneFile(subPath, findDat, isCaseSensitiveSrc);
         } else {
-            ConfirmOneFile(subPath, findDat);
+            ConfirmOneFile(subPath, findDat, isCaseSensitiveSrc);
         }
     } while (FindNextFile(hFind, &findDat));
 }
 
-bool DoNewBackup() {
+bool DoNewBackup(int caseSensitive) {
     // recursively copy any changed files (by size or timestamp) from the old folder to the new.
     // returns false if the copy could not start -- this prevents an orphan purge from running
     CString search = src + "*";
@@ -1118,7 +1250,7 @@ bool DoNewBackup() {
         myprintf("Failed to open search: code %d\n", GetLastError());
         return false;
     }
-    RecursivePath(src, "", hFind, findDat, true);
+    RecursivePath(src, "", hFind, findDat, true, caseSensitive);
     FindClose(hFind);
     return true;
 }
@@ -1126,7 +1258,7 @@ bool DoNewBackup() {
 /////////////////////////////////////////////////////////////////////////
 // Deal with deleting (well, backing up) orphaned files
 
-void DeleteOrphans() {
+void DeleteOrphans(int caseSensitive) {
     // similar to backup, but runs backwards and moves any files
     // that were no longer in the src folder
     myprintf("Remove orphaned files...\n");
@@ -1156,12 +1288,12 @@ void DeleteOrphans() {
         myprintf("Failed to open dest search: code %d\n", GetLastError());
         return;
     }
-    RecursivePath(dest, "", hFind, findDat, false);
+    RecursivePath(dest, "", hFind, findDat, false, caseSensitive);
     FindClose(hFind);
 }
 
 // check if the passed in file exists in src. If it does not, move it.
-void ConfirmOneFile(CString &path, WIN32_FIND_DATA &findDat) {
+void ConfirmOneFile(CString &path, WIN32_FIND_DATA &findDat, bool isCaseSensitive) {
     // copy file from src to dest - we can use the dat to check whether to do it
     // any old file is moved to the backup folder~~[0] before being replaced
     // free space is expected to be present
@@ -1170,6 +1302,12 @@ void ConfirmOneFile(CString &path, WIN32_FIND_DATA &findDat) {
     CString srcFile = src + path + fn;
     CString destFile = dest + path + fn;
     CString backupFile; backupFile.Format(fmtStr, baseDest, 0); backupFile+='\\'; backupFile+=workingFolder; backupFile += path; backupFile+=fn;
+
+    if (isCaseSensitive) {
+        // in this case, the files are already formatted (in theory), so we just need
+        // to DEformat the srcFile so it will match
+        srcFile = caseSensitiveUnformat(srcFile);
+    }
 
     // check if this path is on the skipList - if so, leave it alone
     if (isSkippable(srcFile)) {
@@ -1276,14 +1414,17 @@ int main(int argc, char *argv[])
     // check whether we need to mount the backup device
     // (in auto mode, enableDevice is the inserted memory stick)
     if ((enableDevice.GetLength() > 0) && (!bAutoMode)) {
-        if (!EnableDisk(enableDevice, true)) {
+        bool wasAlready = false;
+        if (!EnableDisk(enableDevice, true, wasAlready)) {
             myprintf("Failed to enable device, can not proceed.\n");
             ++errs;
             goodbye();
         }
         // we should pause to let things sync up
-        myprintf("Waiting %d seconds for OS to finish setup...\n", mountDelay);
-        Sleep(mountDelay*1000);
+        if (!wasAlready) {
+            myprintf("Waiting %d seconds for OS to finish setup...\n", mountDelay);
+            Sleep(mountDelay*1000);
+        }
     }
     mountOk = true;
 
@@ -1397,8 +1538,13 @@ int main(int argc, char *argv[])
             if (dest.Right(1) != '\\') dest+='\\';
             workingFolder = srcList[idx].destFolder;
             if (workingFolder.Right(1) != '\\') workingFolder+='\\';
+            int cs = srcList[idx].caseSensitive;
 
-            myprintf("Going to work from %s to %s\n", W2A(src.GetString()), W2A(dest.GetString()));
+            if (cs == -1) {
+                myprintf("Going to work from %s to %s\n", W2A(src.GetString()), W2A(dest.GetString()));
+            } else {
+                myprintf("Going to work from %s to %s (%s)\n", W2A(src.GetString()), W2A(dest.GetString()), cs?"Force Case Sensitive":"Force No Case Sensitive");
+            }
 
             // make sure this destination folder exists
             if (!MoveToFolder(_T(""), dest)) {
@@ -1409,7 +1555,7 @@ int main(int argc, char *argv[])
             }
 
             if (doBackup) { 
-                if (!DoNewBackup()) {
+                if (!DoNewBackup(cs)) {
                     ++errs;
                     if (deleteOld) {
                         myprintf("Failed to start backup, skipping purge of orphans!\n");
@@ -1418,7 +1564,7 @@ int main(int argc, char *argv[])
                 }
             }
             if (deleteOld) {
-                DeleteOrphans();
+                DeleteOrphans(cs);
             }
         }
     }

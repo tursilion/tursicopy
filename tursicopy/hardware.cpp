@@ -13,10 +13,10 @@ extern int errs;
 extern bool verbose;
 
 // Enable/disable based on https://stackoverflow.com/questions/1438371/win32-api-function-to-programmatically-enable-disable-device
-bool EnableDisk(const CString& instanceId, bool enable);
+bool EnableDisk(const CString& instanceId, bool enable, bool &wasAlready);
 std::vector<SP_DEVINFO_DATA> GetDeviceInfoData(HDEVINFO handle);
 int GetIndexOfInstance(HDEVINFO handle, std::vector<SP_DEVINFO_DATA>& diData, const CString& instanceId);
-bool EnableDevice(HDEVINFO handle, SP_DEVINFO_DATA& diData, bool enable);
+bool EnableDevice(HDEVINFO handle, SP_DEVINFO_DATA& diData, bool enable, bool &wasalready);
 
 /// <summary>
 /// Enable or disable a disk device.
@@ -24,7 +24,7 @@ bool EnableDevice(HDEVINFO handle, SP_DEVINFO_DATA& diData, bool enable);
 /// <param name="instanceId">The device instance id of the device. Available in the device manager.</param>
 /// <param name="enable">True to enable, False to disable.</param>
 /// <remarks>returns false if the device is not Disableable.</remarks>
-bool EnableDisk(const CString& instanceId, bool enable)
+bool EnableDisk(const CString& instanceId, bool enable, bool &wasAlready)
 {
     HDEVINFO diSetHandle = INVALID_HANDLE_VALUE;
     
@@ -66,7 +66,7 @@ bool EnableDisk(const CString& instanceId, bool enable)
         myprintf("Matched index %d...\n", index);
     }
 
-    if (!EnableDevice(diSetHandle, diData[index], enable)) {
+    if (!EnableDevice(diSetHandle, diData[index], enable, wasAlready)) {
         myprintf("Device action failed!\n");
         SetupDiDestroyDeviceInfoList(diSetHandle);
         ++errs;
@@ -128,7 +128,7 @@ int GetIndexOfInstance(HDEVINFO handle, std::vector<SP_DEVINFO_DATA>& diData, co
 }
 
 // enable/disable...
-bool EnableDevice(HDEVINFO handle, SP_DEVINFO_DATA& diData, bool enable)
+bool EnableDevice(HDEVINFO handle, SP_DEVINFO_DATA& diData, bool enable, bool &wasAlready)
 {
     SP_PROPCHANGE_PARAMS params;
     params.ClassInstallHeader.cbSize = sizeof(SP_CLASSINSTALL_HEADER);
@@ -262,6 +262,7 @@ bool EnableDevice(HDEVINFO handle, SP_DEVINFO_DATA& diData, bool enable)
         }
 
         // check if the device state meets requirements
+        wasAlready = false;
         if (enable) {
             // then it must be disabled ;)
             if (devStatus&DN_STARTED) {
@@ -269,6 +270,7 @@ bool EnableDevice(HDEVINFO handle, SP_DEVINFO_DATA& diData, bool enable)
                 if (verbose) {
                     myprintf("Device is already running.\n");
                 }
+                wasAlready = true;
                 return true;
             }
         } else {
@@ -278,6 +280,7 @@ bool EnableDevice(HDEVINFO handle, SP_DEVINFO_DATA& diData, bool enable)
                 if (verbose) {
                     myprintf("Device is already disabled.\n");
                 }
+                wasAlready = true;
                 return true;
             }
             // maybe we can loop on this if it's not?
