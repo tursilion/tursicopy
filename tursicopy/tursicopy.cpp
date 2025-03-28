@@ -18,7 +18,7 @@
 #include <atlbase.h>
 #include <atlconv.h>
 
-#define MYVERSION "114a"
+#define MYVERSION "114b"
 
 // deliberate error to remind me to use my own wrapper
 #undef PathFileExists
@@ -1330,6 +1330,47 @@ void ConfirmOneFile(CString &path, WIN32_FIND_DATA &findDat, bool isCaseSensitiv
             myprintf("** Failed to move file -- not copied! Code %d\n", GetLastError());
             ++errs;
             return;
+        }
+    }
+
+    // special cleanup handler for migration to case sensitive tests - if the new and old format file exist, nuke the old one
+    if ((isCaseSensitive) && (destFile.Find(_T('^')) != -1)) {
+        CString oldFile = caseSensitiveUnformat(destFile);
+        if (verbose) {
+            myprintf("Checking backup folder for old version of %s (%s)\n", W2A(destFile.GetString()), W2A(oldFile.GetString()));
+        }
+
+        if (CheckExists(oldFile)) {
+            // now we need to be certain it's the uppercase version, and not a lowercase
+            // version which would be legal to keep
+            if (verbose) {
+                myprintf("Match found, checking case...\n");
+            }
+            WIN32_FIND_DATA newFind;
+            HANDLE hFind2 = FindFirstFile(formatPath(oldFile), &newFind);
+            if (INVALID_HANDLE_VALUE != hFind2) {
+                // it matched, check the exact case
+                CString rawfn = caseSensitiveUnformat(fn);
+                if (verbose) {
+                    myprintf("Want %s, found %s\n", W2A(rawfn.GetString()), W2A(newFind.cFileName));
+                }
+                if (0 == rawfn.Compare(newFind.cFileName)) {
+                    // note: backupFile will have the new syntax
+                    myprintf("NUKEOLD: %s -> %s\n", W2A(oldFile.GetString()), W2A(backupFile.GetString()));
+                    if (!MoveToFolder(oldFile, backupFile)) {
+                        myprintf("** Failed to move file -- not copied! Code %d\n", GetLastError());
+                        ++errs;
+                        return;
+                    }
+                } else {
+                    if (verbose) {
+                        myprintf("-- No match\n");
+                    }
+                }
+                FindClose(hFind2);
+            } else {
+                myprintf("FindFirstFile failed on case check\n");
+            }
         }
     }
 }
