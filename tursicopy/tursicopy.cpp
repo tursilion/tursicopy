@@ -18,7 +18,7 @@
 #include <atlbase.h>
 #include <atlconv.h>
 
-#define MYVERSION "114b"
+#define MYVERSION "114c"
 
 // deliberate error to remind me to use my own wrapper
 #undef PathFileExists
@@ -1258,6 +1258,7 @@ bool DoNewBackup(int caseSensitive) {
     HANDLE hFind = FindFirstFile(formatPath(search), &findDat);
     if (INVALID_HANDLE_VALUE == hFind) {
         myprintf("Failed to open search: code %d\n", GetLastError());
+        myprintf("Exact path: %S\n", formatPath(search).GetString());
         return false;
     }
     RecursivePath(src, "", hFind, findDat, true, caseSensitive);
