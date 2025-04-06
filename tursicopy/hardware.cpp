@@ -487,3 +487,55 @@ CString FindDriveNamed(CString &volName) {
     myprintf("No drive name matched '%S', failing.\n", volName.GetString());
     return "";
 }
+
+// Execute a program and wait for it to exit (copied from spawn)
+int RunAndWait(CString &cmd, CString &args) {
+    // NOTE: docs recommend initializing COM before this, in case the action requires
+    // COM. Since I'm intending this for applications, I'm not going to bother.
+    
+    // Since I want spawn to wait for the app to exit in order to capture and return
+    // an exit code, I need to use ShellExecuteEx. This is new behavior.
+    SHELLEXECUTEINFO info;
+    memset(&info, 0, sizeof(info));
+    info.cbSize = sizeof(info);
+    info.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC | SEE_MASK_FLAG_NO_UI | SEE_MASK_UNICODE;
+    info.lpFile = cmd.GetString();
+    info.lpParameters = args.GetString();
+    info.nShow = SW_MINIMIZE;
+    if (!ShellExecuteEx(&info)) {
+        DWORD err = GetLastError();
+        wprintf(L"Error %d occurred trying to execute %s.\n", err, cmd.GetString());
+
+        // just in case, should not be true
+        if (info.hProcess != NULL) {
+            CloseHandle(info.hProcess);
+        }
+
+        return (int)err;
+    }
+
+    // with ShellExecute, I needed this to avoid dying too quickly. With the wait and no async and
+    // all it's probably unnecessary now, but why trust Windows to be faster than you are? ;)
+    Sleep(500);
+
+    DWORD returnCode = 0;   // by default, we'll return ok if we don't know better
+
+    if (info.hProcess != NULL) {
+        // we launched, so wait on the handle (if we got one) to know when the app exits
+        // inifinite waits are terrible, but it has to exit eventually. However,
+        // in this case eventually could be hours or even days... (ie: backups)
+        wprintf(L"Waiting...");
+
+        WaitForSingleObject(info.hProcess, INFINITE);
+        if (!GetExitCodeProcess(info.hProcess, &returnCode)) {
+            returnCode = 0; // we couldn't read it for some reason... this might be bad to mask?
+        }
+
+        wprintf(L"done. Return code %d\n", returnCode);
+        CloseHandle(info.hProcess);
+    } else {
+        wprintf(L"Did not receive a process handle\n");
+    }
+
+    return returnCode;
+}

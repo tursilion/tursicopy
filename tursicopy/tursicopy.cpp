@@ -18,7 +18,7 @@
 #include <atlbase.h>
 #include <atlconv.h>
 
-#define MYVERSION "114c"
+#define MYVERSION "115"
 
 // deliberate error to remind me to use my own wrapper
 #undef PathFileExists
@@ -29,6 +29,7 @@ CString workingFolder;
 CString enableDevice, baseDest;
 CString csApp, findDrive;
 bool unmountDevice, rotateOld, doBackup, deleteOld;
+bool gWakeWSL = false;
 ULARGE_INTEGER freeUser;
 ULARGE_INTEGER reserve;
 int saveFolders;
@@ -53,11 +54,13 @@ struct _srcs {
     CString srcPath;
     CString destFolder;
     int caseSensitive;
+    bool startWSL;
 
-    _srcs(CString src, CString dest, int cs) {
+    _srcs(CString src, CString dest, int cs, int wsl) {
         srcPath = src;
         destFolder = dest;
         caseSensitive = cs;
+        startWSL = wsl ? 1: 0;
     }
 };
 std::vector<_srcs> srcList;
@@ -91,6 +94,7 @@ bool EnableDisk(const CString& instanceId, bool enable, bool &wasAlready);
 bool EjectDrive(CString pStr);
 bool FlushDrive(CString pStr);
 CString FindDriveNamed(CString &volName);
+int RunAndWait(CString &cmd, CString &args);
 
 /////////////////////////////////////////////////////////////////////////
 
@@ -176,6 +180,7 @@ void setDefaults() {
     rotateOld = true;
     doBackup = true;
     deleteOld = true;
+    gWakeWSL = false;
     isCompressedDrive = false;
     errs = 0;
     icon.cbSize = 0;
@@ -193,11 +198,12 @@ void PrintProfile() {
 
     myprintf("\n[Source]\n");
     for (unsigned int idx = 0; idx < srcList.size(); ++idx) {
-        if (srcList[idx].caseSensitive == -1) {
-            myprintf("%S=%S\n", srcList[idx].destFolder.GetString(), srcList[idx].srcPath.GetString());
-        } else {
-            myprintf("%S:%S=%S\n", srcList[idx].destFolder.GetString(), srcList[idx].caseSensitive ? "CS":"NOCS", srcList[idx].srcPath.GetString());
-        }
+        myprintf("%S", srcList[idx].destFolder.GetString());
+        // -1 means caseSensitive is not set
+        if (srcList[idx].caseSensitive == 1) myprintf(":CS");
+        if (srcList[idx].caseSensitive == 0) myprintf(":NOCS");
+        if (srcList[idx].startWSL == 1) myprintf(":WSL");
+        myprintf("=%S\n", srcList[idx].srcPath.GetString());
     }
 
     myprintf("\n[Filter]\n");
@@ -209,6 +215,7 @@ void PrintProfile() {
     myprintf("EnableDevice=%S\n", enableDevice.GetString());
     myprintf("UnmountDevice=%d\n", unmountDevice?1:0);
     myprintf("FindDrive=%S\n", findDrive.GetString());
+    myprintf("WakeWSL=%d\n", gWakeWSL?1:0);
     myprintf("PauseOnErrors=%d\n", pauseOnErrs?1:0);
     myprintf("PauseAlways=%d\n", pauseAlways?1:0);
     myprintf("Verbose=%d\n", verbose?1:0);
@@ -225,6 +232,15 @@ void PrintProfile() {
     myprintf("isCompressedDrive=%d\n", isCompressedDrive?1:0);
     
     myprintf("\n");
+}
+
+// Wake WSL by executing a basic command (just exits)
+// we do have to wait for it to complete, which is a little more annoying
+void wakeWSL() {
+    myprintf("Waking WSL... errors here will not increment error count.\n");
+    CString cmd = _T("wsl");
+    CString arg = _T("-- exit");
+    RunAndWait(cmd, arg);
 }
 
 void SplitString(const char *inStr, CString &key, CString &val) {
@@ -342,24 +358,40 @@ bool ReadProfile(const CString &profile) {
                 case SOURCE:
                     // everything in this section is a path
                     // key might have a :CS or :NOCS for case sensitive
+                    // it might ALSO have a ":WSL" for WSL launch
                     {
                         int cs = -1;    // autodetect case sensitive
+                        int wsl = 0;    // whether to launch WSL
 
                         if (-1 != key.Find(':')) {
                             int p = key.Find(':');
                             CString arg = key.Mid(p+1);
                             key = key.Left(p);
 
-                            if (arg.CompareNoCase(_T("CS")) == 0) {
-                                cs = 1;
-                            } else if (arg.CompareNoCase(_T("NOCS")) == 0) {
-                                cs = 0;
-                            } else {
-                                myprintf("Unknown argument in [SOURCE] for %s\n", string);
+                            while (!arg.IsEmpty()) {
+                                CString newarg = "";
+                                if (-1 != arg.Find(':')) {
+                                    p = arg.Find(':');
+                                    newarg = arg.Mid(p+1);
+                                    arg = arg.Left(p);
+                                }
+
+                                if (arg.CompareNoCase(_T("CS")) == 0) {
+                                    cs = 1;
+                                } else if (arg.CompareNoCase(_T("NOCS")) == 0) {
+                                    cs = 0;
+                                } else if (arg.CompareNoCase(_T("WSL")) == 0) {
+                                    wsl = 1;
+                                } else {
+                                    myprintf("Unknown argument in [SOURCE] for %s\n", string);
+                                }
+
+                                // replace with the next one
+                                arg = newarg;
                             }
                         }
                         if (!key.IsEmpty()) {
-                            srcList.emplace_back(val, key, cs);
+                            srcList.emplace_back(val, key, cs, wsl);
                             gotSomething = true;
                         }
                     }
@@ -393,6 +425,18 @@ bool ReadProfile(const CString &profile) {
                     } else if (key.CompareNoCase(_T("FindDrive")) == 0) {
                         findDrive = val;
                         gotSomething = true;
+                    } else if (key.CompareNoCase(_T("WakeWSL")) == 0) {
+                        if (val.Compare(_T("0")) == 0) {
+                            gWakeWSL = false;
+                            gotSomething = true;
+                        } else if (val.Compare(_T("1")) == 0) {
+                            gWakeWSL = true;
+                            gotSomething = true;
+                        } else {
+                            myprintf("Couldn't parse value for WakeWSL (0/1) [PARANOID]: %s\n", string);
+                            fclose(fp);
+                            return false;
+                        }
                     } else if (key.CompareNoCase(_T("PauseOnErrors")) == 0) {
                         if (val.Compare(_T("0")) == 0) {
                             pauseOnErrs = false;
@@ -609,7 +653,7 @@ bool LoadConfig(int argc, char *argv[]) {
             print_usage();
             return false;
 	    }
-        srcList.emplace_back(src, "", -1);  // one source, from src to root folder of dest, detect case sensitivity
+        srcList.emplace_back(src, "", -1, 0);  // one source, from src to root folder of dest, detect case sensitivity
         return true;
     }
 
@@ -1463,6 +1507,11 @@ int main(int argc, char *argv[])
     }
     PrintProfile();
 
+    // wake WSL if necessary
+    if (gWakeWSL) {
+        wakeWSL();
+    }
+
     // check whether we need to mount the backup device
     // (in auto mode, enableDevice is the inserted memory stick)
     if ((enableDevice.GetLength() > 0) && (!bAutoMode)) {
@@ -1596,6 +1645,10 @@ int main(int argc, char *argv[])
                 myprintf("Going to work from %s to %s\n", W2A(src.GetString()), W2A(dest.GetString()));
             } else {
                 myprintf("Going to work from %s to %s (%s)\n", W2A(src.GetString()), W2A(dest.GetString()), cs?"Force Case Sensitive":"Force No Case Sensitive");
+            }
+
+            if (srcList[idx].startWSL) {
+                wakeWSL();
             }
 
             // make sure this destination folder exists
